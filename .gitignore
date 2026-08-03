@@ -1,0 +1,23 @@
+# Local configuration and credentials
+.env
+
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated streaming state and data
+checkpoints/
+data/
+logs/
+
+# Local agent build plan
+PROJECT_PLAN.md
+
+# Editors and macOS
+.DS_Store
+.idea/
+.vscode/
