@@ -18,11 +18,12 @@ The streaming foundation includes:
 - Binance JSON and MEXC Protobuf offline fixtures
 - Generated MEXC Protobuf decoding code
 - PySpark 4.0.3 with explicit Kafka schemas
-- An initial live Binance-to-Kafka producer with delivery confirmation
+- Live Binance and MEXC producers with Kafka delivery confirmation
 
-The Binance producer currently supports one configured symbol and cleanly flushes
-bounded runs. MEXC live ingestion, reconnect supervision, DLQ publishing, Spark
-aggregation, the PostgreSQL sink, and the dashboard are still to be implemented.
+Each source producer currently supports one configured symbol and cleanly flushes
+bounded runs. Concurrent source supervision, reconnect handling, application-level
+MEXC heartbeats, DLQ publishing, Spark aggregation, the PostgreSQL sink, and the
+dashboard are still to be implemented.
 
 ## Current topology
 
@@ -66,7 +67,7 @@ Kafka UI is available at <http://localhost:8080>. PostgreSQL listens only on
 Use `make infra-down` for a normal shutdown. It preserves both named volumes.
 Deleting volumes is intentionally not part of the standard workflow.
 
-## Publish Binance trades
+## Publish exchange trades
 
 Run a bounded five-event learning sample:
 
@@ -78,6 +79,18 @@ Run continuously until interrupted:
 
 ```bash
 make producer-binance
+```
+
+Run a bounded MEXC sample:
+
+```bash
+.venv/bin/python -m producer.main --source mexc --max-events 5
+```
+
+Run MEXC continuously until interrupted:
+
+```bash
+make producer-mexc
 ```
 
 ## Repository map
