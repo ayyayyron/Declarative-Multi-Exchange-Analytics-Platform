@@ -4,7 +4,7 @@ PYTHON := .venv/bin/python
 JAVA_17_HOME := $(shell brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home
 export JAVA_HOME := $(JAVA_17_HOME)
 
-.PHONY: help venv install format format-check lint test check proto db-migrate db-status infra-up infra-down infra-stop infra-status infra-logs topics spark-smoke
+.PHONY: help venv install format format-check lint test check proto db-migrate db-status infra-up infra-down infra-stop infra-status infra-logs topics spark-smoke producer-binance
 
 help:
 	@echo "make install       Create .venv and install pinned dependencies"
@@ -17,6 +17,7 @@ help:
 	@echo "make db-migrate    Apply pending PostgreSQL migrations"
 	@echo "make db-status     Check PostgreSQL readiness"
 	@echo "make spark-smoke   Verify the selected Java/Spark/Kafka combination"
+	@echo "make producer-binance  Stream Binance trades into Kafka until stopped"
 
 venv:
 	@test -x $(PYTHON) || python3.11 -m venv .venv
@@ -77,3 +78,6 @@ topics:
 
 spark-smoke:
 	$(PYTHON) -m scripts.spark_kafka_smoke
+
+producer-binance:
+	$(PYTHON) -m producer.main

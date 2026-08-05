@@ -8,7 +8,7 @@ The detailed build plan is maintained locally outside version control.
 
 ## Current status
 
-Phase 1A establishes the contracts and infrastructure. It includes:
+The streaming foundation includes:
 
 - Kafka 4.3.1 in single-broker KRaft mode
 - Kafbat Kafka UI
@@ -18,9 +18,11 @@ Phase 1A establishes the contracts and infrastructure. It includes:
 - Binance JSON and MEXC Protobuf offline fixtures
 - Generated MEXC Protobuf decoding code
 - PySpark 4.0.3 with explicit Kafka schemas
+- An initial live Binance-to-Kafka producer with delivery confirmation
 
-There is no live producer, Spark aggregation job, PostgreSQL sink, or dashboard
-yet. Those are delivered in later phases.
+The Binance producer currently supports one configured symbol and cleanly flushes
+bounded runs. MEXC live ingestion, reconnect supervision, DLQ publishing, Spark
+aggregation, the PostgreSQL sink, and the dashboard are still to be implemented.
 
 ## Current topology
 
@@ -45,7 +47,7 @@ Compose network.
 
 The application is written in Python. Java 17 is required by Spark's JVM runtime.
 
-## Phase 1A setup
+## Local setup
 
 ```bash
 cp .env.example .env
@@ -64,12 +66,27 @@ Kafka UI is available at <http://localhost:8080>. PostgreSQL listens only on
 Use `make infra-down` for a normal shutdown. It preserves both named volumes.
 Deleting volumes is intentionally not part of the standard workflow.
 
+## Publish Binance trades
+
+Run a bounded five-event learning sample:
+
+```bash
+.venv/bin/python -m producer.main --max-events 5
+```
+
+Run continuously until interrupted:
+
+```bash
+make producer-binance
+```
+
 ## Repository map
 
 | Path | Responsibility |
 |---|---|
 | `common/` | Canonical models, settings, and logging |
-| `producer/adapters/` | Pure exchange-payload mapping; live connections come next |
+| `producer/adapters/` | Pure exchange-payload mapping |
+| `producer/` | WebSocket clients, Kafka publishing, and producer entry point |
 | `producer/proto/` | Pinned MEXC schema provenance and local decoder schema |
 | `producer/generated/` | Mechanically generated Protobuf module |
 | `streaming/` | Spark wire schema; processing job comes later |

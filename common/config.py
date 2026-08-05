@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_raw_trades_topic: str = "raw-trades"
     kafka_dlq_topic: str = "raw-trades-dlq"
+    kafka_producer_client_id: str = "streaming-market-producer"
+    kafka_flush_timeout_seconds: PositiveInt = 10
 
     binance_ws_base_url: str = "wss://data-stream.binance.vision/ws"
     mexc_ws_url: str = "wss://wbs-api.mexc.com/ws"
