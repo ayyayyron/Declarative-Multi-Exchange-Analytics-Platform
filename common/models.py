@@ -19,6 +19,12 @@ Decimal28x10 = Annotated[
 Exchange = Literal["binance", "mexc"]
 TradeSide = Literal["buy", "sell", "unknown"]
 PayloadEncoding = Literal["utf8-json", "base64-protobuf"]
+FailureStage = Literal[
+    "source_decode",
+    "contract_validation",
+    "kafka_delivery",
+    "spark_decode",
+]
 
 
 class TradeEvent(BaseModel):
@@ -78,12 +84,7 @@ class DeadLetterEvent(BaseModel):
 
     schema_version: Literal[2] = 2
     failed_at_ms: PositiveInt
-    failure_stage: Literal[
-        "source_decode",
-        "contract_validation",
-        "kafka_delivery",
-        "spark_decode",
-    ]
+    failure_stage: FailureStage
     failure_type: str = Field(min_length=1)
     failure_message: str = Field(min_length=1)
     source: Exchange | Literal["unknown"]

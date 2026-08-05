@@ -19,11 +19,12 @@ The streaming foundation includes:
 - Generated MEXC Protobuf decoding code
 - PySpark 4.0.3 with explicit Kafka schemas
 - Live Binance and MEXC producers with Kafka delivery confirmation
+- Independent reconnect supervision, MEXC heartbeat, and DLQ routing
 
-Each source producer currently supports one configured symbol and cleanly flushes
-bounded runs. Concurrent source supervision, reconnect handling, application-level
-MEXC heartbeats, DLQ publishing, Spark aggregation, the PostgreSQL sink, and the
-dashboard are still to be implemented.
+The sources run concurrently with independent failure handling and clean shutdown.
+The measured 15-minute dual-source acceptance run is the remaining producer gate.
+Spark aggregation, the PostgreSQL sink, and the dashboard are still to be
+implemented.
 
 ## Current topology
 
@@ -69,6 +70,12 @@ Deleting volumes is intentionally not part of the standard workflow.
 
 ## Publish exchange trades
 
+Run both exchanges continuously:
+
+```bash
+make producer
+```
+
 Run a bounded five-event learning sample:
 
 ```bash
@@ -91,6 +98,16 @@ Run MEXC continuously until interrupted:
 
 ```bash
 make producer-mexc
+```
+
+When `--source both` and `--max-events` are combined, the limit applies to each
+source. MEXC may exceed it because every trade in the final Protobuf frame is
+published.
+
+Publish one intentionally malformed offline fixture to the DLQ:
+
+```bash
+make producer-dlq-smoke
 ```
 
 ## Repository map

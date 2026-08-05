@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import PositiveInt, PostgresDsn, field_validator
+from pydantic import PositiveFloat, PositiveInt, PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,11 +18,15 @@ class Settings(BaseSettings):
     kafka_dlq_topic: str = "raw-trades-dlq"
     kafka_producer_client_id: str = "streaming-market-producer"
     kafka_flush_timeout_seconds: PositiveInt = 10
+    producer_reconnect_base_seconds: PositiveFloat = 1
+    producer_reconnect_max_seconds: PositiveFloat = 30
+    producer_metrics_interval_seconds: PositiveFloat = 10
 
     binance_ws_base_url: str = "wss://data-stream.binance.vision/ws"
     mexc_ws_url: str = "wss://wbs-api.mexc.com/ws"
     market_symbols: str = "BTCUSDT"
     mexc_trade_update_speed: Literal["100ms", "10ms"] = "100ms"
+    mexc_heartbeat_interval_seconds: PositiveFloat = 20
 
     postgres_dsn: PostgresDsn = PostgresDsn(
         "postgresql://streaming:streaming-local-only@localhost:5432/streaming"

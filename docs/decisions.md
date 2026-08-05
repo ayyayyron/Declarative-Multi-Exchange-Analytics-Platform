@@ -66,3 +66,22 @@ wrapper fields are ignored by Protobuf, avoiding unused account models.
 `.env` is ignored. Its default PostgreSQL password is explicitly local-only, and
 all service ports bind to `127.0.0.1`. Exchange market-data connections use no
 account or API credentials.
+
+## ADR-009 — Supervise exchange sessions independently
+
+**Status:** Accepted
+
+Binance and MEXC run under separate reconnect supervisors and share only the
+Kafka publisher and coordinated stop event. A recoverable source exception is
+contained by its supervisor, while capped exponential backoff with jitter avoids
+synchronized reconnect pressure. `SIGINT` and `SIGTERM` set the stop event so
+sockets, heartbeat tasks, metrics, and Kafka flushing follow one shutdown path.
+
+## ADR-010 — Keep source failures out of the canonical trade topic
+
+**Status:** Accepted
+
+Decode and contract-validation failures are serialized as `DeadLetterEvent`
+records in `raw-trades-dlq`. The normal topic therefore retains only valid
+version-2 trades. Failure context is bounded and excludes configuration or
+tracebacks; the original public payload is retained for diagnosis and replay.

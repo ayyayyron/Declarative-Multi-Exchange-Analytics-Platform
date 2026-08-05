@@ -5,7 +5,7 @@ from typing import Protocol, cast
 from confluent_kafka import Producer
 
 from common.logging_config import get_logger
-from common.models import TradeEvent
+from common.models import DeadLetterEvent, TradeEvent
 
 LOGGER = get_logger(__name__)
 
@@ -35,9 +35,17 @@ class ProducerClient(Protocol):
     def flush(self, timeout: float = -1) -> int: ...
 
 
+class EventPublisher(Protocol):
+    def publish_trade(self, event: TradeEvent) -> None: ...
+
+    def publish_dead_letter(self, event: DeadLetterEvent) -> None: ...
+
+
 @dataclass
 class PublishStats:
     queued: int = 0
+    trades_queued: int = 0
+    dead_letters_queued: int = 0
     delivered: int = 0
     failed: int = 0
 
@@ -55,25 +63,52 @@ def build_producer(
     return cast(ProducerClient, Producer(config))
 
 
-class KafkaTradePublisher:
+class KafkaPublisher:
     def __init__(
         self,
-        topic: str,
+        trade_topic: str,
+        dead_letter_topic: str,
         flush_timeout_seconds: int,
         producer: ProducerClient,
     ) -> None:
-        self.topic = topic
+        self.trade_topic = trade_topic
+        self.dead_letter_topic = dead_letter_topic
         self.flush_timeout_seconds = flush_timeout_seconds
         self.producer = producer
         self.stats = PublishStats()
 
-    def publish(self, event: TradeEvent) -> None:
-        self.producer.produce(
-            self.topic,
+    def publish_trade(self, event: TradeEvent) -> None:
+        self._publish(
+            topic=self.trade_topic,
             key=event.kafka_key,
             value=event.model_dump_json(),
-            on_delivery=self._delivery_report,
         )
+        self.stats.trades_queued += 1
+
+    def publish_dead_letter(self, event: DeadLetterEvent) -> None:
+        self._publish(
+            topic=self.dead_letter_topic,
+            key=f"{event.source}:{event.failure_stage}",
+            value=event.model_dump_json(),
+        )
+        self.stats.dead_letters_queued += 1
+
+    def _publish(self, topic: str, key: str, value: str) -> None:
+        try:
+            self.producer.produce(
+                topic,
+                key=key,
+                value=value,
+                on_delivery=self._delivery_report,
+            )
+        except BufferError:
+            self.producer.poll(1.0)
+            self.producer.produce(
+                topic,
+                key=key,
+                value=value,
+                on_delivery=self._delivery_report,
+            )
         self.stats.queued += 1
         self.producer.poll(0)
 
