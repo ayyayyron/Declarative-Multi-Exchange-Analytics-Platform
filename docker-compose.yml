@@ -8,7 +8,6 @@ services:
     ports:
       - "127.0.0.1:9092:9092"
     environment:
-      # One process owns both broker and KRaft controller roles for local learning.
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093

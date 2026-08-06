@@ -1,44 +1,60 @@
 # Multi-Exchange Crypto Analytics Platform
 
-A zero-cost learning project that normalizes public Binance and MEXC trade
-streams through Kafka and processes them with Spark Structured Streaming. The
-Phase 1 product will serve cross-exchange analytics from PostgreSQL to Streamlit.
+A local, near-real-time market analytics system built from public Binance and
+MEXC WebSocket feeds. It normalizes exchange-specific messages into a shared
+event contract, publishes them to Kafka, and is being extended with Spark
+Structured Streaming, PostgreSQL, and Streamlit for cross-exchange analytics.
 
-The detailed build plan is maintained locally outside version control.
+The project is designed as a practical study of streaming reliability, event
+contracts, stateful processing, and serving-layer design using free local tools.
+Binance and MEXC market-data connections do not require accounts or API keys.
 
-## Current status
-
-The streaming foundation includes:
-
-- Kafka 4.3.1 in single-broker KRaft mode
-- Kafbat Kafka UI
-- PostgreSQL 17 with persistent local storage
-- Versioned PostgreSQL migrations
-- A version-2 canonical trade contract shared by Binance and MEXC
-- Binance JSON and MEXC Protobuf offline fixtures
-- Generated MEXC Protobuf decoding code
-- PySpark 4.0.3 with explicit Kafka schemas
-- Live Binance and MEXC producers with Kafka delivery confirmation
-- Independent reconnect supervision, MEXC heartbeat, and DLQ routing
-
-The sources run concurrently with independent failure handling and clean shutdown.
-The measured 15-minute dual-source acceptance run is the remaining producer gate.
-Spark aggregation, the PostgreSQL sink, and the dashboard are still to be
-implemented.
-
-## Current topology
+## System design
 
 ```mermaid
 flowchart LR
-    Host["Python and Spark on macOS"] -->|"localhost:9092"| Kafka["Kafka in Docker"]
-    UI["Kafka UI on localhost:8080"] -->|"kafka:29092"| Kafka
-    Host -->|"localhost:5432"| PG["PostgreSQL in Docker"]
-    Kafka --> KV["Kafka named volume"]
-    PG --> PV["PostgreSQL named volume"]
+    B[Binance WebSocket] --> BA[Binance adapter]
+    M[MEXC WebSocket] --> MA[MEXC adapter]
+    BA --> K[(Kafka: raw-trades)]
+    MA --> K
+    BA -. invalid event .-> D[(Kafka: raw-trades-dlq)]
+    MA -. invalid event .-> D
+    K --> S[Spark Structured Streaming]
+    S --> P[(PostgreSQL)]
+    P --> UI[Streamlit dashboard]
 ```
 
-Host applications use loopback ports. Containers use Docker service names on the
-Compose network.
+Kafka and PostgreSQL run in Docker. The Python producers and Spark jobs run on
+the host so they are easy to inspect and debug while learning.
+
+## Current capabilities
+
+- Concurrent ingestion from Binance JSON and MEXC Protobuf WebSocket feeds
+- One versioned canonical trade event for both exchanges
+- Kafka keys scoped by exchange and symbol to preserve per-market ordering
+- Independent reconnect supervision with capped exponential backoff and jitter
+- MEXC application heartbeat and coordinated process shutdown
+- Delivery acknowledgements, operational metrics, and dead-letter routing
+- Explicit Kafka topics with bounded local retention
+- PostgreSQL migrations and a pinned Spark/Kafka compatibility check
+- Offline exchange fixtures and automated contract, adapter, and runtime tests
+
+The dual-source producer has completed a continuous acceptance run with 77,807
+Kafka deliveries and no rejected or failed events. The Spark processing job,
+PostgreSQL serving writes, and Streamlit dashboard are the next components to be
+built.
+
+## Technology
+
+- Python 3.11
+- Apache Kafka 4.3.1 in KRaft mode
+- Spark Structured Streaming 4.0.3
+- PostgreSQL 17
+- Streamlit (planned serving interface)
+- Docker Compose and Kafbat Kafka UI
+
+The same event contract is intended to support a later Flink, ClickHouse, and
+Grafana implementation without changing the upstream data sources.
 
 ## Prerequisites
 
@@ -47,90 +63,97 @@ Compose network.
 - Homebrew OpenJDK 17
 - GNU Make
 
-The application is written in Python. Java 17 is required by Spark's JVM runtime.
+The application code is Python. Java 17 is required for Spark's JVM runtime.
 
-## Local setup
+## Setup
+
+Create the local environment and validate the code:
 
 ```bash
 cp .env.example .env
 make install
 make proto
 make check
+```
+
+Start Kafka, Kafka UI, and PostgreSQL, then initialize the database:
+
+```bash
 make infra-up
-make db-status
+make infra-status
 make db-migrate
 make topics
 ```
 
-Kafka UI is available at <http://localhost:8080>. PostgreSQL listens only on
-`localhost:5432`.
+Kafka UI is available at <http://localhost:8080>. PostgreSQL listens on
+`localhost:5432`; Kafka listens on `localhost:9092`.
 
-Use `make infra-down` for a normal shutdown. It preserves both named volumes.
-Deleting volumes is intentionally not part of the standard workflow.
+Run `make infra-down` to stop the containers while preserving the named Kafka
+and PostgreSQL volumes.
 
-## Publish exchange trades
+## Stream market data
 
-Run both exchanges continuously:
+Run both exchange sources until interrupted:
 
 ```bash
 make producer
 ```
 
-Run a bounded five-event learning sample:
+Use `Ctrl+C` for a coordinated shutdown. The final log lines report source and
+Kafka delivery totals.
+
+For short learning and verification runs:
 
 ```bash
-.venv/bin/python -m producer.main --max-events 5
-```
-
-Run continuously until interrupted:
-
-```bash
-make producer-binance
-```
-
-Run a bounded MEXC sample:
-
-```bash
+.venv/bin/python -m producer.main --source both --max-events 5
+.venv/bin/python -m producer.main --source binance --max-events 5
 .venv/bin/python -m producer.main --source mexc --max-events 5
 ```
 
-Run MEXC continuously until interrupted:
+With `--source both`, `--max-events` applies independently to each exchange. A
+MEXC run can exceed the requested count because one Protobuf frame can contain
+multiple trades and the complete frame is published.
 
-```bash
-make producer-mexc
-```
-
-When `--source both` and `--max-events` are combined, the limit applies to each
-source. MEXC may exceed it because every trade in the final Protobuf frame is
-published.
-
-Publish one intentionally malformed offline fixture to the DLQ:
+Publish one intentionally malformed fixture to verify dead-letter routing:
 
 ```bash
 make producer-dlq-smoke
 ```
 
+## Event model
+
+Both adapters publish versioned JSON events to `raw-trades`. Prices and
+quantities remain decimal strings on Kafka and will be cast only after Spark
+validation. The message key has the form `<source>:<symbol>`, such as
+`binance:BTCUSDT`.
+
+Malformed source messages are isolated in `raw-trades-dlq` with their failure
+stage and original public payload. See [the data contract](docs/data-contracts.md)
+for field definitions and identity rules.
+
 ## Repository map
 
 | Path | Responsibility |
 |---|---|
-| `common/` | Canonical models, settings, and logging |
-| `producer/adapters/` | Pure exchange-payload mapping |
-| `producer/` | WebSocket clients, Kafka publishing, and producer entry point |
-| `producer/proto/` | Pinned MEXC schema provenance and local decoder schema |
+| `common/` | Canonical models, configuration, and logging |
+| `producer/adapters/` | Exchange-specific payload normalization |
+| `producer/` | WebSocket clients, supervision, metrics, and Kafka publishing |
+| `producer/proto/` | Pinned MEXC schema provenance and decoder schema |
 | `producer/generated/` | Mechanically generated Protobuf module |
-| `streaming/` | Spark wire schema; processing job comes later |
+| `streaming/` | Spark schemas and streaming processing code |
 | `migrations/` | Immutable PostgreSQL schema changes |
-| `scripts/` | Migrations and compatibility checks |
+| `scripts/` | Operational migrations and compatibility checks |
 | `tests/fixtures/` | Captured public exchange messages for offline tests |
-| `docs/` | Decisions, contracts, evidence, and learning notes |
+| `docs/` | Architecture decisions, contracts, and validation evidence |
 
-## Local limitations
+## Local design boundaries
 
-- One Kafka broker and replication factor one provide no broker-failure
-  tolerance.
-- Kafka and PostgreSQL use plaintext listeners bound to the local machine.
-- Exchange market feeds are public but still use encrypted `wss://` transport.
-- Kafka producer idempotence, Spark checkpoints, and database upserts will reduce
-  duplicates at different boundaries; the project will not claim universal
+- The single Kafka broker and replication factor of one do not tolerate broker
+  or volume loss.
+- All local service listeners use plaintext and bind only to the host loopback
+  interface. Public exchange feeds use encrypted `wss://` connections.
+- Kafka producer idempotence, Spark checkpoints, and database upserts address
+  duplicates at different boundaries; the system does not claim universal
   exactly-once delivery.
+- PostgreSQL is the analytics serving store, not an unbounded raw-event archive.
+  Kafka retains the recent canonical stream for replay.

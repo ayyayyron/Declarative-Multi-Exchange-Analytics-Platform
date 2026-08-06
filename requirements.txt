@@ -1,4 +1,4 @@
-# Phase 1 runtime dependencies
+# Runtime dependencies
 pydantic==2.13.4
 pydantic-settings==2.14.2
 confluent-kafka==2.15.0
