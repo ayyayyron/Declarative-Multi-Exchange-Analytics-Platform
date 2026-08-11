@@ -3,8 +3,10 @@ SHELL := /bin/bash
 PYTHON := .venv/bin/python
 JAVA_17_HOME := $(shell brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home
 export JAVA_HOME := $(JAVA_17_HOME)
+export PYSPARK_PYTHON := $(abspath $(PYTHON))
+export PYSPARK_DRIVER_PYTHON := $(abspath $(PYTHON))
 
-.PHONY: help venv install format format-check lint test check proto db-migrate db-status infra-up infra-down infra-stop infra-status infra-logs topics spark-smoke producer producer-binance producer-mexc producer-dlq-smoke
+.PHONY: help venv install format format-check lint test check proto db-migrate db-status infra-up infra-down infra-stop infra-status infra-logs topics spark-smoke spark-consumer spark-consumer-once live-pipeline live-pipeline-once dashboard producer producer-binance producer-mexc producer-dlq-smoke
 
 help:
 	@echo "make install       Create .venv and install pinned dependencies"
@@ -17,6 +19,11 @@ help:
 	@echo "make db-migrate    Apply pending PostgreSQL migrations"
 	@echo "make db-status     Check PostgreSQL readiness"
 	@echo "make spark-smoke   Verify the selected Java/Spark/Kafka combination"
+	@echo "make spark-consumer       Consume and inspect new Kafka trades"
+	@echo "make spark-consumer-once  Consume available trades and then stop"
+	@echo "make live-pipeline        Stream validated trades into PostgreSQL"
+	@echo "make live-pipeline-once   Sink available trades and then stop"
+	@echo "make dashboard            Start Streamlit on localhost:8501"
 	@echo "make producer          Stream both exchanges until stopped"
 	@echo "make producer-binance  Stream Binance trades into Kafka until stopped"
 	@echo "make producer-mexc     Stream MEXC trades into Kafka until stopped"
@@ -81,6 +88,21 @@ topics:
 
 spark-smoke:
 	$(PYTHON) -m scripts.spark_kafka_smoke
+
+spark-consumer:
+	$(PYTHON) -m streaming.consumer
+
+spark-consumer-once:
+	$(PYTHON) -m streaming.consumer --available-now
+
+live-pipeline:
+	$(PYTHON) -m streaming.live_pipeline
+
+live-pipeline-once:
+	$(PYTHON) -m streaming.live_pipeline --available-now
+
+dashboard:
+	$(PYTHON) -m streamlit run dashboard/app.py --server.address 127.0.0.1
 
 producer:
 	$(PYTHON) -m producer.main --source both

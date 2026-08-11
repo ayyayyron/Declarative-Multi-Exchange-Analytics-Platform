@@ -1,11 +1,13 @@
 from typing import Final
 
 from pyspark.sql.types import (
+    BinaryType,
     BooleanType,
     LongType,
     StringType,
     StructField,
     StructType,
+    TimestampType,
 )
 
 # Decimal values remain strings until streaming validation can reject a malformed
@@ -27,5 +29,20 @@ TRADE_EVENT_WIRE_SCHEMA: Final = StructType(
         StructField("is_buyer_maker", BooleanType(), nullable=True),
         StructField("source_payload_encoding", StringType(), nullable=False),
         StructField("source_payload", StringType(), nullable=False),
+    ]
+)
+
+TRADE_EVENT_PARSE_SCHEMA: Final = StructType(
+    [*TRADE_EVENT_WIRE_SCHEMA.fields, StructField("_corrupt_record", StringType())]
+)
+
+KAFKA_RECORD_SCHEMA: Final = StructType(
+    [
+        StructField("key", BinaryType(), nullable=True),
+        StructField("value", BinaryType(), nullable=True),
+        StructField("topic", StringType(), nullable=False),
+        StructField("partition", LongType(), nullable=False),
+        StructField("offset", LongType(), nullable=False),
+        StructField("timestamp", TimestampType(), nullable=True),
     ]
 )

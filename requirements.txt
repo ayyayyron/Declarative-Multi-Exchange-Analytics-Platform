@@ -5,12 +5,17 @@ confluent-kafka==2.15.0
 websockets==16.1.1
 protobuf==7.35.1
 psycopg[binary]==3.3.4
+psycopg-pool==3.3.1
 pyspark==4.0.3
+streamlit==1.61.1
+pandas==2.3.3
+altair==6.2.2
 
 # Development and Protobuf generation dependencies
 grpcio-tools==1.82.1
 grpcio==1.83.0
 types-protobuf==7.34.1.20260518
+pandas-stubs==2.3.3.260113
 black==26.5.1
 mypy==2.3.0
 pytest==9.1.1

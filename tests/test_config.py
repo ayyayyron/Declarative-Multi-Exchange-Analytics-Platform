@@ -16,6 +16,7 @@ def test_settings_build_exchange_subscriptions() -> None:
         "spot@public.aggre.deals.v3.api.pb@100ms@ETHUSDT",
     )
     assert settings.local_data_dir == Path("data")
+    assert not settings.live_pipeline_fail_on_data_loss
 
 
 @pytest.mark.parametrize("symbols", ["btcusdt,", "BTC-USDT", ""])

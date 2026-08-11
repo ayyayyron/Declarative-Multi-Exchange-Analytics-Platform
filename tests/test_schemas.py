@@ -1,4 +1,4 @@
-from streaming.schemas import TRADE_EVENT_WIRE_SCHEMA
+from streaming.schemas import TRADE_EVENT_PARSE_SCHEMA, TRADE_EVENT_WIRE_SCHEMA
 
 
 def test_wire_schema_matches_canonical_contract_order() -> None:
@@ -22,3 +22,4 @@ def test_wire_schema_matches_canonical_contract_order() -> None:
 
     assert TRADE_EVENT_WIRE_SCHEMA["source_event_id"].nullable
     assert TRADE_EVENT_WIRE_SCHEMA["is_buyer_maker"].nullable
+    assert TRADE_EVENT_PARSE_SCHEMA.fieldNames()[-1] == "_corrupt_record"

@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     spark_master: str = "local[2]"
     spark_driver_memory: str = "1g"
     spark_shuffle_partitions: PositiveInt = 4
+    spark_starting_offsets: Literal["earliest", "latest"] = "earliest"
+    spark_max_offsets_per_trigger: PositiveInt = 20_000
+    spark_trigger_interval_seconds: PositiveInt = 5
+    live_pipeline_fail_on_data_loss: bool = False
+
+    live_trade_retention_minutes: PositiveInt = 60
+    dashboard_symbol: str = "BTCUSDT"
+    dashboard_refresh_seconds: PositiveInt = 3
+    dashboard_stale_after_seconds: PositiveInt = 15
+    dashboard_chart_points: PositiveInt = 2_000
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 

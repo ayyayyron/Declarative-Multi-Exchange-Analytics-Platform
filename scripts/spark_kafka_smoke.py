@@ -1,5 +1,6 @@
 import json
 import shutil
+import sys
 from pathlib import Path
 
 from pyspark.sql import SparkSession
@@ -24,6 +25,8 @@ def build_spark() -> SparkSession:
         SparkSession.builder.appName("phase-1-compatibility-smoke")
         .master(settings.spark_master)
         .config("spark.driver.memory", settings.spark_driver_memory)
+        .config("spark.pyspark.python", sys.executable)
+        .config("spark.pyspark.driver.python", sys.executable)
         .config(
             "spark.sql.shuffle.partitions",
             str(settings.spark_shuffle_partitions),
