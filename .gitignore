@@ -1,5 +1,6 @@
 # Local configuration and credentials
 .env
+config/feeds.yaml
 
 # Python environments and caches
 .venv/
@@ -16,6 +17,7 @@ logs/
 
 # Local agent build plan
 PROJECT_PLAN.md
+project-notes/
 
 # Editors and macOS
 .DS_Store

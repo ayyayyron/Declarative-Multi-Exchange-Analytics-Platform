@@ -1,0 +1,15 @@
+version: 1
+
+exchanges:
+  binance:
+    transport: websocket
+    market_type: spot
+  mexc:
+    transport: websocket
+    market_type: spot
+
+watchlists:
+  - name: major-pairs
+    exchanges: [binance, mexc]
+    pairs: [BTC/USDT, ETH/USDT]
+    feeds: [trades]

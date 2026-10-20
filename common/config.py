@@ -1,3 +1,7 @@
+"""Operational settings shared by the host applications; market watchlists live
+in YAML.
+"""
+
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -15,6 +19,7 @@ class Settings(BaseSettings):
 
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_raw_trades_topic: str = "raw-trades"
+    kafka_raw_frames_topic: str = "raw-market-frames-v1"
     kafka_dlq_topic: str = "raw-trades-dlq"
     kafka_producer_client_id: str = "streaming-market-producer"
     kafka_flush_timeout_seconds: PositiveInt = 10
@@ -41,7 +46,9 @@ class Settings(BaseSettings):
     spark_starting_offsets: Literal["earliest", "latest"] = "earliest"
     spark_max_offsets_per_trigger: PositiveInt = 20_000
     spark_trigger_interval_seconds: PositiveInt = 5
+    candle_watermark_delay_seconds: PositiveInt = 120
     live_pipeline_fail_on_data_loss: bool = False
+    serving_mode: Literal["raw", "canonical"] = "raw"
 
     live_trade_retention_minutes: PositiveInt = 60
     dashboard_symbol: str = "BTCUSDT"
@@ -80,4 +87,5 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    """Load and cache one settings instance per process."""
     return Settings()

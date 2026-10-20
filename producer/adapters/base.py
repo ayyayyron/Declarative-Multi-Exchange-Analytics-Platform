@@ -1,2 +1,0 @@
-class SourcePayloadError(ValueError):
-    pass
