@@ -1,6 +1,7 @@
 """Canonical trade contract produced by provider decoders and consumed by processing."""
 
 import base64
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import (
@@ -8,6 +9,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PositiveInt,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -37,6 +39,11 @@ class TradeEvent(BaseModel):
     is_buyer_maker: bool | None = None
     source_payload_encoding: PayloadEncoding
     source_payload: str = Field(min_length=2)
+
+    @field_serializer("price", "quantity", when_used="json")
+    def serialize_decimal(self, value: Decimal) -> str:
+        """Keep canonical JSON compatible with Spark's plain-decimal contract."""
+        return format(value, "f")
 
     @field_validator("symbol")
     @classmethod

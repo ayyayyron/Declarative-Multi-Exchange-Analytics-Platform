@@ -1,9 +1,13 @@
+import base64
+import json
 import sys
 from collections.abc import Iterator
+from decimal import Decimal
 
 import pytest
 from pyspark.sql import SparkSession
 
+from processing.decoders.mexc.generated.mexc_market_data_pb2 import PushDataV3ApiWrapper
 from processing.spark.normalization import normalize_raw_frames
 from processing.spark.raw_source import RAW_INPUT_SCHEMA
 from processing.spark.validation import valid_trade_records
@@ -79,3 +83,46 @@ def test_fixture_reader_boundary_does_not_require_kafka_metadata(
     assert all(row.topic is None and row.offset is None for row in rows)
     assert all(row.source_location == "fixture:mexc:1" for row in rows)
 
+
+@pytest.mark.parametrize("source", ["binance", "mexc"])
+@pytest.mark.parametrize("value", ["0.00000001", "0.0000000001"])
+def test_small_decimals_survive_provider_decoding_and_spark_validation(
+    spark: SparkSession, source: str, value: str
+) -> None:
+    frame = captured(source)
+    if source == "binance":
+        payload = json.loads(frame.payload)
+        payload.update(p=value, q=value)
+        frame = frame.model_copy(update={"payload": json.dumps(payload)})
+        expected_count = 1
+    else:
+        message = PushDataV3ApiWrapper()
+        message.ParseFromString(base64.b64decode(frame.payload))
+        for deal in message.publicAggreDeals.deals:
+            deal.price = value
+            deal.quantity = value
+        frame = frame.model_copy(
+            update={"payload": base64.b64encode(message.SerializeToString()).decode()}
+        )
+        expected_count = len(message.publicAggreDeals.deals)
+    raw = spark.createDataFrame(
+        [
+            (
+                frame.model_dump_json(),
+                "fixture",
+                "small-decimal",
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        ],
+        RAW_INPUT_SCHEMA,
+    )
+    decoded = normalize_raw_frames(raw)
+    assert decoded.filter("validation_error IS NOT NULL").count() == 0
+    rows = valid_trade_records(decoded).collect()
+    assert len(rows) == expected_count
+    assert all(row.price == Decimal(value) for row in rows)
+    assert all(row.quantity == Decimal(value) for row in rows)

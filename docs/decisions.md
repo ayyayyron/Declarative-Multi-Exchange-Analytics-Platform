@@ -27,7 +27,7 @@ aggregates.
 
 ## ADR-004 — Normalize before Kafka
 
-**Status:** Accepted
+**Status:** Superseded by ADR-012 for new ingestion
 
 Source adapters convert Binance JSON and MEXC Protobuf to one versioned JSON
 contract. Spark and the later Flink implementation therefore depend on a stable
@@ -79,9 +79,55 @@ sockets, heartbeat tasks, metrics, and Kafka flushing follow one shutdown path.
 
 ## ADR-010 — Keep source failures out of the canonical trade topic
 
-**Status:** Accepted
+**Status:** Legacy canonical path; superseded by ADR-012 for raw capture
 
 Decode and contract-validation failures are serialized as `DeadLetterEvent`
 records in `raw-trades-dlq`. The normal topic therefore retains only valid
 version-2 trades. Failure context is bounded and excludes configuration or
 tracebacks; the original public payload is retained for diagnosis and replay.
+
+## ADR-011 — Expand watchlists into bounded asynchronous feeds
+
+**Status:** Accepted
+
+`config/feeds.yaml` selects supported spot trade pairs and venues. Strict startup
+validation expands watchlists into at most 20 unique exchange/symbol feeds before
+opening network connections. The tracked example is the template; the local
+file is ignored. Operational settings remain in `.env`. Explicit `--source`
+retains environment-based market selection for older commands.
+
+Each logical feed owns one WebSocket session, reconnect supervisor, and metrics
+identity. All feeds share one Kafka client in one Python process. This keeps
+failures isolated without generating code, containers, or brokers per symbol.
+The first implementation favors simple connections over subscription multiplexing.
+
+Syntax validation does not prove exchange listing availability. Instrument
+discovery, provider-wide rate limiting, quote feeds, and dynamic dashboard
+selection are separate work. The existing canonical trade contract, Spark query,
+and PostgreSQL keys already support multiple symbols and are unchanged.
+
+## ADR-012 — Capture raw frames before interpretation
+
+**Status:** Accepted
+
+Ingestion owns sockets, subscriptions, control messages, receipt times, and
+publication. It writes a versioned raw envelope to `raw-market-frames-v1` without
+interpreting trade fields. Spark-worker decoders produce the existing canonical
+business contract, followed by shared Spark validation and serving writes.
+This moves the retained replay boundary before provider-specific interpretation.
+It does not recover data never received/published or outlive Kafka retention.
+
+There is no intermediate canonical topic or staging store. A source-reader
+boundary supplies a common raw-frame DataFrame shape; a local fixture proves
+normalization does not require Kafka metadata. File/S3 readers and archiving
+remain future work. Python-worker decoders reuse the verified generated Protobuf
+and model behavior; native Spark decoding is a possible measured optimization,
+not assumed equivalent without tests.
+
+Cutover uses a new checkpoint and `raw_market` schema; legacy state is preserved.
+Sub-event indexes allow one frame to contain many trades. Transactions include
+serving changes, bounded quarantine, counters, and batch evidence. A locked query
+history binds the serving namespace to the checkpoint UUID and fails on mismatch.
+The UUID is read from Spark-managed metadata, not edited by the application.
+Intentional replay currently requires isolated output/database and checkpoint
+state. The legacy sink's earlier reset hazard is not retroactively repaired.

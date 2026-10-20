@@ -1,3 +1,6 @@
+"""Render PostgreSQL serving results; this page does not consume Kafka directly."""
+
+from datetime import UTC
 from typing import Any
 
 import altair as alt
@@ -7,10 +10,12 @@ import streamlit as st
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 from common.config import get_settings
+from dashboard.charts import candle_chart, candle_table
 from dashboard.queries import (
     LatestTrade,
     age_seconds,
     calculate_spread,
+    fetch_candles,
     fetch_latest_trades,
     fetch_pipeline_status,
     fetch_recent_prices,
@@ -46,16 +51,23 @@ def price_label(trade: LatestTrade | None) -> str:
 
 @st.fragment(run_every=f"{settings.dashboard_refresh_seconds}s")
 def live_market() -> None:
+    """Refresh the selected symbol's observations and pipeline-wide processing
+    status.
+    """
+    schema = "raw_market" if settings.serving_mode == "raw" else "analytics"
     try:
         with database_pool(str(settings.postgres_dsn)).connection() as connection:
-            latest = fetch_latest_trades(connection, settings.dashboard_symbol)
+            latest = fetch_latest_trades(connection, settings.dashboard_symbol, schema)
             prices = fetch_recent_prices(
                 connection,
                 settings.dashboard_symbol,
                 int(settings.dashboard_chart_points),
+                schema,
             )
-            trades = fetch_recent_trades(connection, settings.dashboard_symbol)
-            pipeline = fetch_pipeline_status(connection)
+            trades = fetch_recent_trades(
+                connection, settings.dashboard_symbol, schema=schema
+            )
+            pipeline = fetch_pipeline_status(connection, schema)
     except (psycopg.Error, PoolTimeout) as error:
         st.error(f"PostgreSQL is unavailable: {type(error).__name__}")
         return
@@ -159,9 +171,65 @@ def live_market() -> None:
             st.info("Waiting for the first Spark batch.")
 
 
+@st.fragment(run_every=f"{settings.dashboard_refresh_seconds}s")
+def candle_market() -> None:
+    """Refresh persisted candles without coupling them to trade-pipeline health."""
+    st.divider()
+    st.subheader("1-minute candles")
+    exchange = st.selectbox(
+        "Candle exchange", ["Binance", "MEXC"], key="candle_exchange"
+    )
+    try:
+        with database_pool(str(settings.postgres_dsn)).connection() as connection:
+            candles = fetch_candles(
+                connection, settings.dashboard_symbol, exchange.lower()
+            )
+    except psycopg.errors.UndefinedTable:
+        st.info(
+            "Candle tables are not installed. Run make db-migrate, then make candles."
+        )
+        return
+    except (psycopg.Error, PoolTimeout) as error:
+        st.error(f"Candle data is unavailable: {type(error).__name__}")
+        return
+    if not candles:
+        st.info(
+            f"No 1-minute candles for {exchange} {settings.dashboard_symbol}. "
+            "Run ingestion and make candles to populate this view."
+        )
+        return
+
+    latest = candles[-1]
+    metrics = st.columns(4)
+    metrics[0].metric("Candle close (USDT)", f"{latest.close:,.2f}")
+    metrics[1].metric("Candle volume (base asset)", f"{latest.volume:,.10f}")
+    metrics[2].metric("Candle trades", f"{latest.trade_count:,}")
+    metrics[3].metric("Candle status", "FINAL" if latest.is_final else "DEVELOPING")
+    last_write = latest.updated_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    st.caption(
+        f"Latest interval: [{latest.window_start:%Y-%m-%d %H:%M:%S}, "
+        f"{latest.window_end:%H:%M:%S}) UTC · revision {latest.revision} · "
+        f"last write {last_write} UTC"
+    )
+    if age_seconds(latest.updated_at) > settings.dashboard_stale_after_seconds:
+        st.warning(
+            "Candle updates are stale. A developing candle can remain open "
+            "when ingestion or processing stops."
+        )
+    st.caption(
+        "Green: close ≥ open; red: close < open. Final means the watermark "
+        "ended acceptance, not that capture history is complete. Gaps are not filled."
+    )
+    price_chart, volume_chart = candle_chart(candles)
+    st.altair_chart(price_chart, width="stretch")
+    st.altair_chart(volume_chart, width="stretch")
+    st.dataframe(candle_table(candles), hide_index=True, width="stretch")
+
+
 st.title(f"{settings.dashboard_symbol} · Multi-Exchange Market Monitor")
 st.caption(
     "Public Binance and MEXC trades · UTC timestamps · refreshes every "
     f"{settings.dashboard_refresh_seconds} seconds"
 )
 live_market()
+candle_market()

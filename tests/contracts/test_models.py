@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from common.models import TradeEvent
+from common.contracts import TradeEvent
 
 
 def valid_trade() -> dict[str, object]:
@@ -33,6 +33,20 @@ def test_trade_event_preserves_decimal_wire_format() -> None:
     assert event.kafka_key == "binance:BTCUSDT"
     assert '"price":"43250.50"' in event.model_dump_json()
     assert '"quantity":"0.015"' in event.model_dump_json()
+
+
+@pytest.mark.parametrize("field", ["price", "quantity"])
+@pytest.mark.parametrize("value", ["0.00000001", "0.0000000001", "1E-8"])
+def test_trade_event_serializes_small_decimals_without_exponents(
+    field: str, value: str
+) -> None:
+    payload = valid_trade()
+    payload[field] = value
+    event = TradeEvent.model_validate(payload)
+
+    assert event.model_dump(mode="json")[field] == format(Decimal(value), "f")
+    assert event.model_dump()[field] == Decimal(value)
+    assert TradeEvent.model_validate_json(event.model_dump_json()) == event
 
 
 @pytest.mark.parametrize(
