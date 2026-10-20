@@ -1,0 +1,2 @@
+class SourcePayloadError(ValueError):
+    pass

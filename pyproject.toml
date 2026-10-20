@@ -1,12 +1,12 @@
 [tool.black]
 line-length = 88
 target-version = ["py311"]
-extend-exclude = "producer/generated"
+extend-exclude = "processing/decoders/mexc/generated"
 
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-extend-exclude = ["producer/generated"]
+extend-exclude = ["processing/decoders/mexc/generated"]
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "LOG", "UP"]
@@ -15,10 +15,10 @@ select = ["B", "E", "F", "I", "LOG", "UP"]
 python_version = "3.11"
 strict = true
 plugins = ["pydantic.mypy"]
-exclude = ['^\.venv/', '^producer/generated/']
+exclude = ['^\.venv/', '^processing/decoders/mexc/generated/']
 
 [[tool.mypy.overrides]]
-module = "producer.generated.*"
+module = "processing.decoders.mexc.generated.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]

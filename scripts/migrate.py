@@ -1,3 +1,5 @@
+"""Apply ordered SQL migrations and reject changes to previously applied files."""
+
 from __future__ import annotations
 
 import hashlib
@@ -21,6 +23,7 @@ def migration_files() -> tuple[Path, ...]:
 
 
 def apply_migrations() -> None:
+    """Verify stored checksums and commit each new migration with its ledger entry."""
     settings = get_settings()
     with psycopg.connect(str(settings.postgres_dsn), autocommit=True) as connection:
         connection.execute("""

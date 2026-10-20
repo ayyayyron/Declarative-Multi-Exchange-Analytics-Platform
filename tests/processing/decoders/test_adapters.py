@@ -3,12 +3,14 @@ from pathlib import Path
 
 import pytest
 
-from producer.adapters.base import SourcePayloadError
-from producer.adapters.binance import parse_binance_trade
-from producer.adapters.mexc import parse_mexc_trade_frame
-from producer.generated.mexc_market_data_pb2 import PushDataV3ApiWrapper
+from processing.decoders.base import SourcePayloadError
+from processing.decoders.binance import parse_binance_trade
+from processing.decoders.mexc.adapter import parse_mexc_trade_frame
+from processing.decoders.mexc.generated.mexc_market_data_pb2 import (
+    PushDataV3ApiWrapper,
+)
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
 
 def test_binance_fixture_maps_to_canonical_trade() -> None:

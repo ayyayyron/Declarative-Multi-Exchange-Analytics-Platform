@@ -1,11 +1,12 @@
+"""Validate canonical event columns with Spark SQL, then expose typed valid rows."""
+
 from collections.abc import Sequence
 
-from pyspark.sql import Column, DataFrame, SparkSession
+from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType
 
-from common.config import Settings
-from streaming.schemas import TRADE_EVENT_PARSE_SCHEMA
+from processing.spark.schemas import TRADE_EVENT_PARSE_SCHEMA
 
 PRICE_TYPE = DecimalType(28, 10)
 DECIMAL_PATTERN = r"^(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{1,10})?$"
@@ -14,23 +15,12 @@ SYMBOL_PATTERN = r"^[A-Z0-9]{3,20}$"
 BASE64_PATTERN = r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
 
 
-def read_trade_stream(
-    spark: SparkSession,
-    settings: Settings,
-    fail_on_data_loss: bool = True,
+def decode_trade_records(
+    kafka_records: DataFrame, extra_columns: Sequence[str] = ()
 ) -> DataFrame:
-    return (
-        spark.readStream.format("kafka")
-        .option("kafka.bootstrap.servers", settings.kafka_bootstrap_servers)
-        .option("subscribe", settings.kafka_raw_trades_topic)
-        .option("startingOffsets", settings.spark_starting_offsets)
-        .option("maxOffsetsPerTrigger", settings.spark_max_offsets_per_trigger)
-        .option("failOnDataLoss", str(fail_on_data_loss).lower())
-        .load()
-    )
-
-
-def decode_trade_records(kafka_records: DataFrame) -> DataFrame:
+    """Parse canonical JSON and attach the first validation error while
+    retaining provenance.
+    """
     parsed = (
         kafka_records.select(
             F.col("key").cast("string").alias("kafka_key"),
@@ -39,6 +29,7 @@ def decode_trade_records(kafka_records: DataFrame) -> DataFrame:
             "partition",
             "offset",
             F.col("timestamp").alias("kafka_timestamp"),
+            *extra_columns,
         )
         .withColumn(
             "trade",
@@ -59,12 +50,14 @@ def decode_trade_records(kafka_records: DataFrame) -> DataFrame:
             "offset",
             "kafka_timestamp",
             "trade.*",
+            *extra_columns,
         )
     )
     return parsed.withColumn("validation_error", _first_validation_error())
 
 
 def valid_trade_records(decoded_records: DataFrame) -> DataFrame:
+    """Keep valid events, cast decimal fields, and derive the UTC trade timestamp."""
     return (
         decoded_records.filter(F.col("validation_error").isNull())
         .drop("_corrupt_record", "validation_error", "raw_value")

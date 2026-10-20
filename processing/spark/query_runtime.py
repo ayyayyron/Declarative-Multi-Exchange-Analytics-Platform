@@ -10,6 +10,9 @@ LOGGER = get_logger(__name__)
 
 
 def await_query_termination(query: StreamingQuery) -> None:
+    """Wait for completion or a stop signal, stopping an active query before
+    returning.
+    """
     stop_requested = Event()
 
     def request_stop(_: int, __: FrameType | None) -> None:

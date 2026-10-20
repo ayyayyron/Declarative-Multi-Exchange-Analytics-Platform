@@ -1,4 +1,4 @@
-from streaming.schemas import TRADE_EVENT_PARSE_SCHEMA, TRADE_EVENT_WIRE_SCHEMA
+from processing.spark.schemas import TRADE_EVENT_PARSE_SCHEMA, TRADE_EVENT_WIRE_SCHEMA
 
 
 def test_wire_schema_matches_canonical_contract_order() -> None:

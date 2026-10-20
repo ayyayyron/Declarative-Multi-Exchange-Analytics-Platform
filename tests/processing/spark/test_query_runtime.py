@@ -3,7 +3,7 @@ from typing import cast
 
 from pyspark.sql.streaming.query import StreamingQuery
 
-from streaming.query_runtime import await_query_termination
+from processing.spark.query_runtime import await_query_termination
 
 
 class FinishedQuery:

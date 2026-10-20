@@ -1,3 +1,7 @@
+"""Legacy analytics-schema sink retained for canonical input and its existing
+checkpoint.
+"""
+
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,7 +15,7 @@ from pyspark.sql import DataFrame, Row
 
 from common.config import Settings
 from common.logging_config import get_logger
-from streaming.kafka_trades import invalid_trade_records, valid_trade_records
+from processing.spark.validation import invalid_trade_records, valid_trade_records
 
 LOGGER = get_logger(__name__)
 QUERY_NAME = "live-market-postgres"
