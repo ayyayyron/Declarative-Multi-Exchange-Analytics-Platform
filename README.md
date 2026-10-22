@@ -1,119 +1,120 @@
-# Multi-Exchange Crypto Analytics Platform
+# Declarative Multi-Exchange Analytics Platform
 
-A local MVP that streams configured public spot trades from Binance and MEXC into a
-live dashboard. Original market frames are captured in Kafka before decoding.
-Spark Structured Streaming normalizes and validates them, then writes
-PostgreSQL serving tables for Streamlit.
+Configure a watchlist, stream market data from multiple exchanges, and explore
+near-real-time prices and market metrics in a local dashboard.
 
-No exchange account or API key is required.
+The platform uses Kafka, Spark Structured Streaming and PostgreSQL, with
+Streamlit for visualization. Market selection is driven by YAML rather than
+separate scripts for each exchange and trading pair. Binance and MEXC spot
+trade feeds are currently supported through public WebSockets; no exchange
+account or API key is required.
 
-## What you can see
+## What it does
 
-The dashboard currently shows:
+- Captures original exchange messages in Kafka before decoding them.
+- Runs concurrent feeds with independent reconnects and shared Kafka publishing.
+- Normalizes Binance JSON and MEXC Protobuf into a common trade format in Spark.
+- Computes event-time candles with deduplication, late-data handling and
+  developing/final status.
+- Displays prices, cross-exchange price differences, recent trades, candle
+  charts and feed freshness.
 
-- Latest Binance and MEXC trade prices
-- Signed price difference and symmetric spread in basis points
-- A live UTC price chart for both exchanges
-- Recent price, quantity, and trade-side observations
-- Feed freshness and Spark batch health
-- One-minute candlesticks and base-asset volume, selectable by exchange
-- Candle trade count, revision, UTC boundaries and developing/final status
+Price comparisons use the last observed trades, not executable bid/ask quotes.
+This is an analytics project, not a trading bot or an arbitrage execution system.
 
-The separate candle query computes deduplicated one-minute OHLCV snapshots in
-PostgreSQL; the dashboard only reads them. Stale updates are labelled, and a
-final candle does not imply complete capture history. VWAP, volatility and
-larger intervals remain future work.
-
-## Architecture
+## How it fits together
 
 ```mermaid
 flowchart LR
-    B[Binance JSON WebSocket] --> I[Python capture]
-    M[MEXC Protobuf WebSocket] --> I
-    I -->|raw envelopes| K[(Kafka raw frames)]
-    K --> S[Spark decode and normalize]
-    S --> V[Shared validation]
-    V --> P[(PostgreSQL serving tables)]
-    V --> Q[(PostgreSQL quarantine)]
-    P --> UI[Streamlit]
-    K --> C[Spark decode and stateful candles]
-    C --> CP[(PostgreSQL candles)]
-    CP --> UI
+    B["Binance · JSON"] --> I["Python WebSocket ingestion"]
+    M["MEXC · Protobuf"] --> I
+    I --> K[("Kafka · raw frames")]
+    K --> T["Spark · decode and validate trades"]
+    K --> C["Spark · decode and aggregate candles"]
+    T --> P[("PostgreSQL")]
+    C --> P
+    P --> UI["Streamlit dashboard"]
 ```
 
-Kafka and PostgreSQL run in Docker. The producer, Spark job, and dashboard run
-from the local Python environment.
+Ingestion, trade processing, candle processing and the dashboard are separate
+programs. Both Spark queries read Kafka independently and keep their own
+checkpoints. The dashboard reads committed database results; it does not consume
+Kafka or calculate the candles.
 
-## Stack
+Kafka, PostgreSQL and Kafka UI run in Docker. The Python applications and Spark
+JVMs run on the host.
 
-- Python 3.11
-- Apache Kafka 4.3.1 in single-broker KRaft mode
-- Spark Structured Streaming 4.0.3
-- PostgreSQL 17
-- Streamlit and Altair
-- Docker Compose and Kafbat Kafka UI
+## Run locally
 
-Java 17 is required because PySpark runs on the Spark JVM.
+### 1. Prepare your environment
 
-## Run the MVP
+The current setup targets macOS with Homebrew. You will need:
 
-Prerequisites: Docker Desktop, Homebrew Python 3.11, Homebrew OpenJDK 17, and
-GNU Make.
+- Docker Desktop, running.
+- Python 3.11 and OpenJDK 17 installed through Homebrew.
+- Make and available local ports: 5432, 8080, 8501 and 9092.
 
-Prepare the project:
+Java is required by Spark; application code is written in Python. The Makefile
+locates Java through Homebrew, so other environments need path adjustments.
+
+From the repository root, create your local configuration and install the
+dependencies. Do not overwrite existing configuration if you have already
+customized it.
 
 ```bash
 cp .env.example .env
 cp config/feeds.example.yaml config/feeds.yaml
 make install
-make proto
-make check
 ```
 
-Start the local services and apply the database migrations:
+### 2. Start the infrastructure
 
 ```bash
 make infra-up
 make db-migrate
-make topics
-```
-
-Check the configured feeds without connecting to Kafka or an exchange:
-
-```bash
 make ingestion-plan
 ```
 
-Open three terminals in the repository and run one command in each:
+The first command starts Kafka, PostgreSQL and Kafka UI, and initializes the
+topics. The second applies pending database migrations. The last prints the
+configured feeds without connecting to an exchange.
 
-```bash
-make ingestion
-```
+### 3. Start the applications
 
-```bash
-make live-pipeline
-```
+Open four terminals in the repository root. Leave one command running in each:
 
-```bash
-make dashboard
-```
+| Terminal | Command | Purpose |
+|---|---|---|
+| 1 | `make ingestion` | Capture the configured exchange feeds |
+| 2 | `make live-pipeline` | Process and store recent/latest trades |
+| 3 | `make candles` | Compute and store one-minute candles |
+| 4 | `make dashboard` | Serve the dashboard |
 
-Open <http://127.0.0.1:8501>. Kafka UI is available at
-<http://127.0.0.1:8080>.
+Open [the dashboard](http://127.0.0.1:8501) and
+[Kafka UI](http://127.0.0.1:8080). Allow the first Spark batches to complete;
+the dashboard may initially show waiting or stale data.
 
-Use `Ctrl+C` to stop each application process. Stop the Docker services without
-deleting their named volumes with:
+If you only want the trade view, you can omit the candle process. Its dashboard
+section will remain empty or show previously stored candles.
+
+### 4. Stop the system
+
+Use `Ctrl+C` in each application terminal, then stop the containers:
 
 ```bash
 make infra-stop
 ```
 
-## Choose markets
+This preserves Kafka and PostgreSQL data. Stopping containers does not stop
+host applications, so stop the four terminal processes too.
 
-Edit the ignored local file `config/feeds.yaml`:
+## Choose exchanges and markets
+
+Edit `config/feeds.yaml`, which is local and git-ignored:
 
 ```yaml
 version: 1
+
 exchanges:
   binance:
     transport: websocket
@@ -121,6 +122,7 @@ exchanges:
   mexc:
     transport: websocket
     market_type: spot
+
 watchlists:
   - name: major-pairs
     exchanges: [binance, mexc]
@@ -128,188 +130,137 @@ watchlists:
     feeds: [trades]
 ```
 
-This expands into four logical feeds. Each has one WebSocket connection and an
-independent reconnect supervisor; all share one Kafka publishing client in one
-Python process. There is a limit of 20 feeds per process, not 20 pairs per venue.
-Adding feeds does not create brokers, topics, or additional Spark jobs.
+This creates four logical feeds: two pairs across two exchanges. Each feed has
+its own WebSocket connection and reconnect supervisor, but they share one
+ingestion process and Kafka publishing client.
 
-Configuration is validated before any network connection. Unknown fields,
-unsupported venues/transports, malformed pairs, and overlapping feeds are
-rejected. Pair names are normalized to uppercase. Validation does not check
-whether an instrument is currently listed on an exchange. Only Binance/MEXC
-spot trade feeds are implemented; quotes, REST polling, and live reload are not.
-Restart ingestion to apply changes.
+To change the watchlist:
 
-Use `make ingestion FEEDS_CONFIG=path/to/feeds.yaml` for another file. With no
-CLI flags, `python -m ingestion.main` reads `config/feeds.yaml`; a missing file
-is an error. Explicit `--source binance|mexc|both` instead uses `MARKET_SYMBOLS`
-from `.env` and cannot be combined with `--config`. Connection endpoints and
-operational settings stay in `.env`.
+1. Edit the pairs or supported exchanges.
+2. Run `make ingestion-plan` to validate the configuration.
+3. Restart ingestion.
 
-Spark and PostgreSQL already handle the configured symbols through the same
-trade contract. The dashboard still displays one symbol: set `DASHBOARD_SYMBOL`
-in `.env` and restart it to switch. An interactive watchlist selector is future work.
+There is a limit of 20 feeds per process. Adding a pair does not create a new
+broker or a separate Spark job. Adding an unsupported exchange requires a
+connector and decoder; a YAML entry alone is not enough.
 
-## Useful development commands
+Validation checks supported settings, pair syntax and duplicate/overlapping
+feeds. It does not check whether an exchange currently lists an instrument.
+REST polling, order-book quotes and live configuration reload are not implemented.
 
-Consume all Kafka records available after the inspection checkpoint, then exit:
+For a different configuration file:
 
 ```bash
-make spark-consumer-once
+make ingestion FEEDS_CONFIG=path/to/feeds.yaml
 ```
 
-Write all records available after the PostgreSQL checkpoint, then exit:
+Operational settings, including connection endpoints, live in `.env`. To change
+the dashboard's displayed symbol, update `DASHBOARD_SYMBOL` and restart the
+dashboard. The candle view has an exchange selector; the symbol is not yet an
+interactive selection.
 
-```bash
-make live-pipeline-once
-```
+## Useful commands
 
-Run one-minute candles separately from the trade-serving query:
+| Command | What it does |
+|---|---|
+| `make infra-status` | Check container status |
+| `make topics` | Inspect Kafka topics |
+| `make spark-consumer-once` | Inspect available input using a separate diagnostic checkpoint |
+| `make live-pipeline-once` | Process available trade input, then exit |
+| `make candles-once` | Process available candle input, then exit |
+| `make check` | Run formatting, linting, type checks and tests |
+| `make proto` | Regenerate the checked-in MEXC Protobuf decoder |
 
-```bash
-make db-migrate
-make candles
-```
-
-For a bounded run that processes available input and exits:
-
-```bash
-make candles-once
-```
-
-This reads the same raw Kafka topic and writes `raw_market.candles`, with its
-own `checkpoints/candles-1m-postgres-v1` directory. It does not replace the
-existing trade pipeline. The dashboard's candle section reads these results
-for `DASHBOARD_SYMBOL`, with a Binance/MEXC selector. To refresh both trade and
-candle views, run ingestion, the live trade pipeline, candles and the dashboard
-in separate terminals. Do not delete only the candle
-checkpoint: the writer rejects a new checkpoint against existing candle output.
-
-`CANDLE_WATERMARK_DELAY_SECONDS` defaults to 120 seconds; this is a provisional
-lateness allowance, not a dashboard delay. Updates follow the Spark trigger.
-Watermark progress follows observed trade time, so a bounded run or idle input
-can leave recent candles developing. Starting mid-window or missing trades
-does not produce complete exchange history, even when a candle is finalized.
-The processor retains trade IDs per active candle; only a limited local
-synthetic load check has been performed. Five-minute processing and larger
-rollups are not wired yet.
-
-Publish a small sample from every configured exchange/symbol feed:
+To capture a small sample instead of running ingestion continuously:
 
 ```bash
 .venv/bin/python -m ingestion.main --max-frames 5
 ```
 
-The limit counts captured frames separately for each feed. A MEXC frame can
-contain several trades, so Spark may produce more trade rows than captured frames.
-`--max-events` remains a compatibility alias but now also counts frames. A quiet feed may take time to reach its limit; `Ctrl+C`
-stops the whole process and flushes outstanding Kafka deliveries.
+This captures up to five market frames per feed. A MEXC frame can contain
+multiple trades, so the resulting trade count can be higher. A quiet feed may
+take longer to reach its limit.
 
-Capture a malformed offline frame, then let Spark quarantine it:
+## Data, recovery and limitations
 
-```bash
-make raw-quarantine-smoke
-make live-pipeline-once
-```
+- **Raw-first capture:** Kafka stores the original market payload in a versioned
+  envelope with capture and subscription metadata. Provider decoding happens in
+  Spark Python workers, followed by shared validation.
+- **Independent recovery:** Trade and candle queries use separate checkpoints.
+  PostgreSQL binds output to each query's checkpoint identity and records
+  committed batches to make same-history retries safe.
+- **Preserve matching state:** Do not delete a checkpoint, change its identity
+  or remove database batch markers independently. Use a separate database and
+  checkpoint for deliberate replay; never share a checkpoint between writers.
+- **Bounded history:** Kafka retention is 24 hours. Recent PostgreSQL trades and
+  quarantine rows default to 60 minutes of database residence, pruned on batch
+  commits. Candle history has no automatic pruning yet. There is no permanent
+  archive or automatic recovery of messages missed during downtime.
+- **Event-time finalization:** The provisional watermark delay is 120 seconds.
+  It is a lateness policy, not a dashboard refresh delay. Idle or stopped input
+  can leave candles developing; a final candle does not prove complete capture.
+- **Local deployment:** One Kafka broker with replication factor one is useful
+  for learning, not high availability. Longer-lived candle state and higher feed
+  counts need further capacity testing.
 
-Run formatting, linting, strict typing, and tests:
+Invalid input is quarantined in PostgreSQL by the trade-serving query. The
+separate candle query filters invalid rows but does not write its own quarantine.
 
-```bash
-make check
-```
+For schema details, retry rules and design trade-offs, see
+[Data contracts](docs/data-contracts.md) and
+[Architecture decisions](docs/decisions.md).
 
-## Data and recovery
+<details>
+<summary>Existing installations and legacy data</summary>
 
-The default topic is `raw-market-frames-v1`. Each versioned JSON envelope
-contains subscription identity, receipt time, a capture ID, and the original
-payload: text unchanged, binary losslessly Base64-encoded. Ingestion does not
-parse trade prices, quantities, symbols, or exchange timestamps from payloads.
-It still owns connection/subscription/control-message handling.
+Run `make infra-up` and `make db-migrate` to initialize missing topics and apply
+additive migrations. Existing topics, tables and checkpoints do not need to
+be deleted.
 
-Spark decodes provider messages inside Python workers using the pinned
-decoders, expands MEXC deal arrays, and applies shared canonical validation.
-This favors parity and reuse over native Spark decoding; worker overhead is a
-known scaling consideration. Invalid input is recorded in
-`raw_market.rejected_frames` in the same transaction as batch evidence.
+The default processing and dashboard mode is `raw`. The older `raw-trades` and
+`raw-trades-dlq` topics, `analytics` schema and
+`checkpoints/live-market-postgres` are retained legacy state.
 
-The serving query uses `checkpoints/raw-market-postgres-v1` and the
-`raw_market` SQL schema. Frame locations include a sub-event index because
-one Kafka record may contain several trades. Stable event IDs deduplicate trade
-inserts; processed counters count valid input events, not only unique inserts.
-The sink uses `COPY`, merges latest prices, updates counters, records a batch
-marker, and prunes recent rows in one PostgreSQL transaction.
-
-A database guard binds the query to its Spark checkpoint UUID. A mismatched
-history fails rather than silently matching old batch IDs. Do not edit/reset
-checkpoints or markers independently. Replay tests should use an isolated
-database and checkpoint; do not point two writers at the same checkpoint.
-Raw input uses `failOnDataLoss=true`: expired offsets fail rather than silently
-skip captured data. Kafka retention is 24 hours, not a permanent archive.
-
-No intermediate canonical Kafka topic or archive is required. The source-reader
-boundary produces a defined raw-frame DataFrame shape, keeping processing
-separate from Kafka reads. File/S3 readers and an archive writer are not implemented.
-
-### Existing installations
-
-Run `make infra-up` to apply the updated topic initializer, then
-`make db-migrate` for the additive raw-serving schema. No old topic, table, or
-checkpoint needs deletion. The default pipeline and dashboard now use raw mode.
-
-`raw-trades`, `raw-trades-dlq`, the `analytics` schema, and the old
-`checkpoints/live-market-postgres` remain legacy state. To inspect/serve that
-canonical input explicitly:
+To inspect that canonical input explicitly:
 
 ```bash
 SERVING_MODE=canonical make live-pipeline-once
 SERVING_MODE=canonical make dashboard
 ```
 
-Ingestion always captures raw frames; `SERVING_MODE` selects processing and
-dashboard behavior, not the producer's wire format. The legacy sink retains its
-older checkpoint-reset hazard. Keep it intact rather than resetting it.
-The new diagnostic inspection query has its own checkpoint
-`raw-frame-inspection-v1`.
+Ingestion always publishes raw frames. `SERVING_MODE` selects processing and
+dashboard behavior, not the producer's wire format. Keep legacy checkpoint
+history intact; its sink does not have the newer UUID ownership guard.
 
-See [the data contract](docs/data-contracts.md) and
-[architecture decisions](docs/decisions.md) for the detailed rules and
-trade-offs.
+</details>
 
-Opt-in sink integration tests create and remove a uniquely named temporary
-database, leaving the configured application's tables untouched:
+<details>
+<summary>Optional PostgreSQL integration tests</summary>
+
+These tests create and remove isolated, uniquely named databases rather than
+writing into the application's serving tables. Start PostgreSQL first.
 
 ```bash
-RUN_POSTGRES_INTEGRATION=1 .venv/bin/python -m pytest tests/processing/spark/test_raw_sink.py
+RUN_POSTGRES_INTEGRATION=1 make check
 ```
 
-## Repository layout
+</details>
 
-| Path | Purpose |
+## Repository guide
+
+| Path | Responsibility |
 |---|---|
-| `ingestion/` | Feed planning, worker supervision, metrics, and Kafka publishing |
-| `config/feeds.example.yaml` | Watchlist template; copy to ignored `config/feeds.yaml` |
-| `ingestion/connectors/` | Exchange sockets, subscriptions, control messages, and heartbeat logic |
-| `processing/decoders/` | Provider decoding, normalization, and pinned MEXC Protobuf sources/decoder |
-| `processing/spark/` | Spark session, raw source boundary, worker normalization, validation, and PostgreSQL writes |
-| `dashboard/` | Streamlit page and PostgreSQL queries |
-| `common/` | Shared configuration and logging |
-| `common/contracts/` | Raw capture envelopes, canonical trades, legacy failures, and shared field types |
+| `config/` | Watchlist example and ignored local feed configuration |
+| `ingestion/` | Connectors, feed planning, reconnects and Kafka publishing |
+| `processing/decoders/` | Provider JSON/Protobuf decoding and normalization |
+| `processing/spark/` | Streaming queries, validation, candle state and sinks |
+| `common/` | Shared settings, logging and data contracts |
+| `dashboard/` | Streamlit views, charts and database reads |
 | `migrations/` | Versioned PostgreSQL schema changes |
-| `tests/fixtures/` | Captured exchange messages for offline tests |
-| `docs/` | Data contracts, decisions, and validation notes |
+| `tests/` | Offline fixtures, unit tests and Spark/database integration tests |
+| `docs/` | Contracts, decisions and historical verification notes |
 
-The older `make producer`, `producer-binance`, and `producer-mexc` commands
-retain environment-based market selection, not YAML selection. Python module
-paths have moved to `ingestion` and `processing.spark`. Kraken, OKX, and quote
-feeds are not implemented yet.
+## Stack
 
-## MVP boundaries
-
-- The single Kafka broker and replication factor of one are for local
-  development, not high availability.
-- Local service listeners are plaintext and bound only to loopback interfaces;
-  exchange feeds use encrypted `wss://` connections.
-- PostgreSQL holds a bounded dashboard projection, not a permanent raw archive.
-- Producer idempotence, Spark checkpoints, and database upserts reduce
-  duplicates at different boundaries. The project does not claim universal
-  exactly-once delivery.
+Python 3.11 · Kafka 4.3.1 · Spark 4.0.3 · PostgreSQL 17 · Streamlit · Altair ·
+Docker Compose · Kafbat Kafka UI
