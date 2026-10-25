@@ -1,5 +1,6 @@
 """Publish raw envelopes asynchronously and track Kafka delivery acknowledgements."""
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -38,7 +39,11 @@ class ProducerClient(Protocol):
 
 
 class FramePublisher(Protocol):
-    def publish_frame(self, frame: RawFrame) -> None: ...
+    async def publish_frame(self, frame: RawFrame) -> None: ...
+
+
+class KafkaPublishError(RuntimeError):
+    """A publishing failure that must not be treated as a socket reconnect."""
 
 
 @dataclass
@@ -71,35 +76,62 @@ class KafkaPublisher:
         frame_topic: str,
         flush_timeout_seconds: int,
         producer: ProducerClient,
+        *,
+        enqueue_timeout_seconds: float = 10,
+        stop_event: asyncio.Event | None = None,
     ) -> None:
+        if enqueue_timeout_seconds <= 0:
+            raise ValueError("Enqueue timeout must be positive")
         self.frame_topic = frame_topic
         self.flush_timeout_seconds = flush_timeout_seconds
         self.producer = producer
         self.stats = PublishStats()
+        self.enqueue_timeout_seconds = enqueue_timeout_seconds
+        self.stop_event = stop_event
 
-    def publish_frame(self, frame: RawFrame) -> None:
+    async def publish_frame(self, frame: RawFrame) -> None:
         """Queue the envelope unchanged; broker delivery is confirmed by a
         later callback.
         """
-        self._publish(self.frame_topic, frame.kafka_key, frame.model_dump_json())
+        try:
+            await self._publish(
+                self.frame_topic, frame.kafka_key, frame.model_dump_json()
+            )
+        except asyncio.CancelledError:
+            self.stats.failed += 1
+            LOGGER.error("Kafka enqueue cancelled: capture_id=%s", frame.capture_id)
+            raise
+        except Exception as error:
+            self.stats.failed += 1
+            raise KafkaPublishError(
+                f"Kafka enqueue failed: capture_id={frame.capture_id}: {error}"
+            ) from error
         self.stats.frames_queued += 1
 
-    def _publish(self, topic: str, key: str, value: str) -> None:
-        try:
-            self.producer.produce(
-                topic,
-                key=key,
-                value=value,
-                on_delivery=self._delivery_report,
-            )
-        except BufferError:
-            self.producer.poll(1.0)
-            self.producer.produce(
-                topic,
-                key=key,
-                value=value,
-                on_delivery=self._delivery_report,
-            )
+    async def _publish(self, topic: str, key: str, value: str) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.enqueue_timeout_seconds
+        while True:
+            try:
+                self.producer.produce(
+                    topic, key=key, value=value, on_delivery=self._delivery_report
+                )
+                break
+            except BufferError:
+                self.producer.poll(0)
+                remaining = deadline - loop.time()
+                if self.stop_event is not None and self.stop_event.is_set():
+                    raise KafkaPublishError("Shutdown with an unqueued frame") from None
+                if remaining <= 0:
+                    raise KafkaPublishError("Kafka queue remained full") from None
+                delay = min(0.05, remaining)
+                if self.stop_event is None:
+                    await asyncio.sleep(delay)
+                else:
+                    try:
+                        await asyncio.wait_for(self.stop_event.wait(), delay)
+                    except TimeoutError:
+                        pass
         self.stats.queued += 1
         self.producer.poll(0)
 
@@ -111,6 +143,10 @@ class KafkaPublisher:
         if remaining:
             raise RuntimeError(
                 f"Kafka producer closed with {remaining} queued messages"
+            )
+        if self.stats.failed:
+            raise KafkaPublishError(
+                f"Kafka failed to publish {self.stats.failed} frames"
             )
 
     def _delivery_report(

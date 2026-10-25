@@ -12,6 +12,7 @@ from ingestion.configuration import load_configuration
 from ingestion.connectors.binance import client as binance_client
 from ingestion.connectors.mexc import client as mexc_client
 from ingestion.feed_plan import FeedSpec, build_feed_plan
+from ingestion.kafka_publisher import KafkaPublishError
 from processing.decoders.mexc.generated.mexc_market_data_pb2 import (
     PushDataV3ApiWrapper,
 )
@@ -19,6 +20,33 @@ from tests.fakes import FakeProducer
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "config/feeds.example.yaml"
+
+
+@pytest.mark.parametrize("source", ["binance", "mexc"])
+def test_queue_timeout_fails_run_without_reopening_socket(
+    monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    sockets = ExchangeSockets()
+    producer, _ = install_fakes(monkeypatch, sockets)
+
+    def full(*args: object, **kwargs: object) -> None:
+        raise BufferError("queue full")
+
+    monkeypatch.setattr(producer, "produce", full)
+
+    async def scenario() -> None:
+        async with asyncio.timeout(1):
+            with pytest.raises(KafkaPublishError):
+                await main.run(
+                    (FeedSpec(source, "BTCUSDT"),),
+                    1,
+                    Settings(_env_file=None, kafka_enqueue_timeout_seconds=0.01),
+                )
+        assert asyncio.all_tasks() == {asyncio.current_task()}
+
+    asyncio.run(scenario())
+    assert sockets.opened == sockets.closed == 1
+    assert producer.flush_timeout == 10
 
 
 class ExchangeSockets:

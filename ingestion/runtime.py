@@ -9,6 +9,7 @@ from typing import Protocol
 
 from common.contracts import Exchange
 from common.logging_config import get_logger
+from ingestion.kafka_publisher import KafkaPublishError
 
 LOGGER = get_logger(__name__)
 
@@ -114,6 +115,8 @@ async def supervise_source(
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            if _is_publish_failure(error):
+                raise
             stats.connection_failures += 1
             if stop_event.is_set():
                 return
@@ -136,3 +139,11 @@ async def supervise_source(
             attempt += 1
             if await stop_waiter(stop_event, delay):
                 return
+
+
+def _is_publish_failure(error: BaseException) -> bool:
+    if isinstance(error, KafkaPublishError):
+        return True
+    return isinstance(error, BaseExceptionGroup) and any(
+        _is_publish_failure(child) for child in error.exceptions
+    )

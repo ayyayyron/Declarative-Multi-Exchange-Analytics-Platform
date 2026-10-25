@@ -5,7 +5,7 @@ from ingestion.kafka_publisher import FramePublisher
 from ingestion.runtime import SourceStats
 
 
-def capture_message(
+async def capture_message(
     message: str | bytes,
     source_channel: str,
     received_at_ms: int,
@@ -24,5 +24,5 @@ def capture_message(
         channel=source_channel,
         received_at_ms=received_at_ms,
     )
-    publisher.publish_frame(frame)
+    await publisher.publish_frame(frame)
     stats.frames_published += 1

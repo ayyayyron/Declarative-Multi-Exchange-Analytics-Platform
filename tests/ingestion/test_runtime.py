@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from ingestion.kafka_publisher import KafkaPublishError
 from ingestion.runtime import (
     BackoffPolicy,
     SessionExit,
@@ -15,6 +16,24 @@ class BlockingConnection:
     async def recv(self) -> str:
         await asyncio.Event().wait()
         return "unreachable"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_publish_failure_is_not_reconnected(grouped: bool) -> None:
+    async def scenario() -> None:
+        stats = SourceStats("mexc", symbol="BTCUSDT")
+        error = KafkaPublishError("queue full")
+
+        async def session() -> SessionExit:
+            if grouped:
+                raise ExceptionGroup("MEXC task group", [error])
+            raise error
+
+        with pytest.raises((KafkaPublishError, ExceptionGroup)):
+            await supervise_source(session, asyncio.Event(), stats, BackoffPolicy(1, 2))
+        assert stats.reconnects == stats.connection_failures == 0
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(

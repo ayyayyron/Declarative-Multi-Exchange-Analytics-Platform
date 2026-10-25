@@ -118,6 +118,8 @@ async def run(
         frame_topic=settings.kafka_raw_frames_topic,
         flush_timeout_seconds=settings.kafka_flush_timeout_seconds,
         producer=producer,
+        enqueue_timeout_seconds=float(settings.kafka_enqueue_timeout_seconds),
+        stop_event=stop_event,
     )
     stats = {
         feed.feed_id: SourceStats(feed.source, symbol=feed.symbol) for feed in feeds
@@ -167,9 +169,6 @@ async def run(
                 if remove_signal_handlers is not None:
                     remove_signal_handlers()
                 log_metrics(stats, publisher)
-
-    if publisher.stats.failed:
-        raise RuntimeError(f"Kafka failed to deliver {publisher.stats.failed} events")
 
 
 def main() -> None:

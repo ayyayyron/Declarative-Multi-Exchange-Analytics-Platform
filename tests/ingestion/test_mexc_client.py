@@ -62,7 +62,7 @@ def test_mexc_subscription_rejects_invalid_acknowledgement(response: str) -> Non
 def test_mexc_binary_frame_is_captured_once_without_decoding() -> None:
     publisher = RecordingPublisher()
     stats = SourceStats("mexc", symbol="BTCUSDT")
-    capture_message(b"not-protobuf", CHANNEL, 1000, publisher, stats)
+    asyncio.run(capture_message(b"not-protobuf", CHANNEL, 1000, publisher, stats))
     assert publisher.frames[0].payload_encoding == "base64"
     assert base64.b64decode(publisher.frames[0].payload) == b"not-protobuf"
     assert stats.frames_published == 1

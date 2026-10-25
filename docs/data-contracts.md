@@ -83,6 +83,22 @@ The raw serving table uniquely identifies source rows by
 `(source_kind, source_location, frame_event_index)` and trades by `event_id`.
 It preserves capture ID and original Kafka location as well.
 
+The raw serving sink rejects conflicting values for the same event ID within a
+batch or against retained `live_trades` and `latest_trades` rows. The compared
+fields are source, symbol, trade time, price, quantity and side; receipt time
+and capture metadata may differ on an exact duplicate. Reusing a retained source
+location/index for another event ID also fails. These errors roll back serving
+rows, diagnostics, counters and the batch marker together; they do not create
+a quarantine row. Fix the conflict before retrying. Once both serving tables
+have forgotten an ID, they cannot establish its previous contents.
+
+Kafka enqueue backpressure retries the same serialized envelope asynchronously
+for up to `KAFKA_ENQUEUE_TIMEOUT_SECONDS` (default 10). An exhausted timeout,
+shutdown or cancellation while unqueued is reported as failure, not a source
+reconnect. This is bounded in-memory retry, not a durable outbox or offline
+backfill guarantee. Pending broker deliveries are flushed and failures reported
+at shutdown.
+
 `raw_market.rejected_frames` retains original envelope text, error reason, source
 location/index, and batch context. A failed frame produces one diagnostic row;
 shared row validation may also quarantine a normalized sub-event. Retries cannot

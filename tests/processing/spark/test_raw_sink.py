@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def dsn() -> Iterator[str]:
     original = str(Settings().postgres_dsn)
     name = "raw_refactor_test_" + uuid4().hex
@@ -111,3 +111,102 @@ def test_transactions_retries_one_to_many_and_history_guard(dsn: str) -> None:
         assert connection.execute(
             "SELECT count(*) FROM raw_market.pipeline_batch_runs"
         ).fetchone() == (2,)
+
+
+def serving_state(dsn: str) -> list[list[tuple[object, ...]]]:
+    with psycopg.connect(dsn) as connection:
+        return [
+            connection.execute(
+                sql.SQL(
+                    "SELECT to_jsonb(t) FROM raw_market.{} t ORDER BY to_jsonb(t)::text"
+                ).format(sql.Identifier(table))
+            ).fetchall()
+            for table in (
+                "live_trades",
+                "latest_trades",
+                "pipeline_status",
+                "pipeline_batch_runs",
+                "query_history",
+                "rejected_frames",
+            )
+        ]
+
+
+@pytest.mark.parametrize("phase", ["same_batch", "later_batch", "after_retention"])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"price": Decimal("70000")},
+        {"quantity": Decimal("0.02")},
+        {"trade_time_ms": 1_785_250_730_250},
+    ],
+)
+def test_conflicting_identity_rolls_back_every_serving_change(
+    dsn: str, phase: str, changes: dict[str, object]
+) -> None:
+    history = str(uuid4())
+    original = rows()[0]
+    changed = Row(**(original.asDict() | changes | {"source_location": "raw:0:2"}))
+    if phase != "same_batch":
+        persist_raw_batch(dsn, history, 0, 1, [original], [], 60)
+        if phase == "after_retention":
+            with psycopg.connect(dsn) as connection:
+                connection.execute("DELETE FROM raw_market.live_trades")
+    before = serving_state(dsn)
+    batch_id = 0 if phase == "same_batch" else 1
+    incoming = [original, changed] if phase == "same_batch" else [changed]
+    with pytest.raises(ValueError, match="Conflicting duplicate trade"):
+        persist_raw_batch(dsn, history, batch_id, 2, incoming, [], 60)
+    assert serving_state(dsn) == before
+
+
+def test_exact_duplicate_payload_with_new_capture_is_safe(dsn: str) -> None:
+    history = str(uuid4())
+    original = rows()[0]
+    duplicate = Row(
+        **(
+            original.asDict()
+            | {
+                "source_location": "raw:0:2",
+                "capture_id": "b" * 32,
+                "received_at_ms": original.received_at_ms + 1000,
+            }
+        )
+    )
+    assert persist_raw_batch(dsn, history, 0, 2, [original, duplicate], [], 60) == (
+        2,
+        1,
+        0,
+    )
+    assert persist_raw_batch(dsn, history, 1, 1, [duplicate], [], 60) == (1, 0, 0)
+    before = serving_state(dsn)
+    assert persist_raw_batch(dsn, history, 1, 1, [duplicate], [], 60) is None
+    assert serving_state(dsn) == before
+    with psycopg.connect(dsn) as connection:
+        assert connection.execute(
+            "SELECT l.price=t.price FROM raw_market.latest_trades l "
+            "JOIN raw_market.live_trades t USING(event_id)"
+        ).fetchone() == (True,)
+
+
+@pytest.mark.parametrize("same_batch", [False, True])
+def test_source_location_cannot_be_reused_for_another_identity(
+    dsn: str, same_batch: bool
+) -> None:
+    history = str(uuid4())
+    original = rows()[0]
+    other = Row(**(original.asDict() | {"event_id": "mexc:BTCUSDT:other"}))
+    if not same_batch:
+        persist_raw_batch(dsn, history, 0, 1, [original], [], 60)
+    before = serving_state(dsn)
+    with pytest.raises(ValueError, match="Conflicting source location"):
+        persist_raw_batch(
+            dsn,
+            history,
+            0 if same_batch else 1,
+            1,
+            [original, other] if same_batch else [other],
+            [],
+            60,
+        )
+    assert serving_state(dsn) == before

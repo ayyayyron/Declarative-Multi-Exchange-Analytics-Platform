@@ -6,7 +6,7 @@ class RecordingPublisher:
     def __init__(self) -> None:
         self.frames: list[RawFrame] = []
 
-    def publish_frame(self, frame: RawFrame) -> None:
+    async def publish_frame(self, frame: RawFrame) -> None:
         self.frames.append(frame)
 
 

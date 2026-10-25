@@ -1,12 +1,12 @@
 # Declarative Multi-Exchange Analytics Platform
 
-Configure a watchlist, stream market data from multiple exchanges, and explore
-near-real-time prices and market metrics in a local dashboard.
+Stream public crypto market data through Kafka and Spark Structured Streaming,
+then explore near-real-time prices and market metrics in Grafana or Streamlit.
 
 The platform uses Kafka, Spark Structured Streaming and PostgreSQL, with
 Grafana and Streamlit dashboards. Market selection is driven by YAML rather
 than separate scripts for each exchange and trading pair. Binance and MEXC spot
-trade feeds are currently supported through public WebSockets; no exchange
+trade feeds use public WebSockets; no exchange
 account or API key is required.
 
 ## What it does
@@ -32,26 +32,31 @@ flowchart LR
     M["MEXC · Protobuf"] --> I
     I --> K[("Kafka · raw frames")]
     K --> T["Spark · decode and validate trades"]
-    K --> C["Spark · decode and aggregate candles"]
+    K --> C["Spark · one-minute candles"]
+    K --> F["Spark · five-minute candles"]
     T --> P[("PostgreSQL")]
     C --> P
+    F --> P
+    P --> R["SQL rollups · 15m / 1h / 1d / 1w"]
     P --> UI["Streamlit dashboard"]
     P --> G["Grafana dashboard"]
+    R --> UI
+    R --> G
 ```
 
-Ingestion, trade processing, candle processing and the dashboard are separate
-programs. Both Spark queries read Kafka independently and keep their own
-checkpoints. The dashboard reads committed database results; it does not consume
-Kafka or calculate the candles.
+Ingestion and each Spark query run independently. The trade query and the two
+candle queries read the same raw topic using separate checkpoints. PostgreSQL
+stores the results and computes larger rollups from current five-minute candles.
+Both dashboards read committed results; neither consumes Kafka or starts Spark.
 
-Kafka, PostgreSQL and Kafka UI run in Docker. The Python applications and Spark
-JVMs run on the host.
+Kafka, PostgreSQL, Kafka UI and Grafana run in Docker. Ingestion, Spark and
+Streamlit run on the host.
 
 ## Run locally
 
 ### 1. Prepare your environment
 
-The current setup targets macOS with Homebrew. You will need:
+The local setup targets macOS with Homebrew. You will need:
 
 - Docker Desktop, running.
 - Python 3.11 and OpenJDK 17 installed through Homebrew.
@@ -91,25 +96,32 @@ Open four terminals in the repository root. Leave one command running in each:
 |---|---|---|
 | 1 | `make ingestion` | Capture the configured exchange feeds |
 | 2 | `make live-pipeline` | Process and store recent/latest trades |
-| 3 | `make candles` | Compute and store one-minute candles |
-| 4 | `make dashboard` | Serve Streamlit (optional when using Grafana) |
+| 3 | `make candles` | Compute one-minute candles |
+| 4 | `make candles CANDLE_INTERVAL=5m` | Compute five-minute candles and supply larger rollups |
 
-For five-minute candles, use `make candles CANDLE_INTERVAL=5m` in terminal 3.
-To keep both intervals updating, run it in an additional terminal alongside the
-default one-minute query. Select `1m` or `5m` in the dashboard; switching the
-selector reads stored results and does not start processing.
+Then start Grafana from another terminal; the command returns after launching
+its container:
 
-The 15m, 1h, 1d and 1w views require the five-minute query. Run `make db-migrate`
-to install the rollup function. Days use UTC midnight; weeks start Monday UTC.
+```bash
+make grafana-up
+```
+
+Open [Market Analytics](http://127.0.0.1:3000/d/market-platform) and
+[Kafka UI](http://127.0.0.1:8080). Allow the first Spark batches to complete.
+Choose a symbol, exchange and candle interval in Grafana. Changing a selector
+reads stored results; it does not start a processing job.
+
+The 15m, 1h, 1d and 1w views require the five-minute query. Days use UTC midnight;
+weeks start Monday UTC.
 Missing base candles are not filled, and full slot coverage does not prove
 complete exchange capture.
 
-Open [the dashboard](http://127.0.0.1:8501) and
-[Kafka UI](http://127.0.0.1:8080). Allow the first Spark batches to complete;
-the dashboard may initially show waiting or stale data.
+For Streamlit, run `make dashboard` in an additional terminal and open
+[localhost:8501](http://127.0.0.1:8501). Either dashboard can run alone or both
+can run together.
 
-If you only want the trade view, you can omit the candle process. Its dashboard
-section will remain empty or show previously stored candles.
+For prices and recent trades only, omit both candle processes. Candle panels
+then remain empty or show previously stored results.
 
 ### 4. Stop the system
 
@@ -139,8 +151,8 @@ Both use the same candle tables and SQL rollups.
 ### Grafana setup
 
 Start PostgreSQL before running `make grafana-up`. No Grafana Cloud account is
-needed. The local page allows anonymous viewing;
-administration is protected by a generated password in the ignored,
+needed. The local page allows anonymous viewing. Administration is protected
+by a generated password in the ignored,
 permission-restricted `.env.grafana` file. Do not expose this local setup to
 the internet. Use the setup command rather than starting the container directly.
 
@@ -158,6 +170,11 @@ The dashboard and data source are provisioned from `infra/grafana/`. Edit
 dashboard; local UI edits are not the source of truth. Grafana reloads the file.
 Both interfaces and their tests stay in Git. Check both when changing serving
 schemas or metric definitions.
+
+Grafana uses `DASHBOARD_STALE_AFTER_SECONDS` when its dashboard is generated.
+Rerun `make grafana-up` after changing that setting. Grafana supports the raw
+serving mode only and rejects `SERVING_MODE=canonical`; use Streamlit to inspect
+legacy canonical data.
 
 Stopping Grafana preserves its named volume and local credentials. `make infra-stop`
 also stops it; `make infra-down` removes containers but preserves named volumes.
@@ -200,7 +217,8 @@ connector and decoder; a YAML entry alone is not enough.
 
 Validation checks supported settings, pair syntax and duplicate/overlapping
 feeds. It does not check whether an exchange currently lists an instrument.
-REST polling, order-book quotes and live configuration reload are not implemented.
+The supported feed is spot trades over WebSockets, not REST polling or order-book
+quotes. Configuration changes take effect when ingestion restarts.
 
 For a different configuration file:
 
@@ -209,9 +227,8 @@ make ingestion FEEDS_CONFIG=path/to/feeds.yaml
 ```
 
 Operational settings, including connection endpoints, live in `.env`. To change
-the dashboard's displayed symbol, update `DASHBOARD_SYMBOL` and restart the
-dashboard. The candle view has an exchange selector; the symbol is not yet an
-interactive selection.
+Streamlit symbol, update `DASHBOARD_SYMBOL` and restart Streamlit. Grafana selects
+its symbol interactively from stored market data.
 
 ## Useful commands
 
@@ -244,6 +261,13 @@ take longer to reach its limit.
 - **Independent recovery:** Trade and candle queries use separate checkpoints.
   PostgreSQL binds output to each query's checkpoint identity and records
   committed batches to make same-history retries safe.
+- **Backpressure:** A full Kafka queue retries the same captured frame without
+  blocking peer feeds. `KAFKA_ENQUEUE_TIMEOUT_SECONDS` defaults to 10; timeout
+  or shutdown with an unqueued frame fails ingestion rather than reconnecting
+  and discarding it. There is no durable local outbox.
+- **Conflicting trades:** Exact duplicates are safe. Conflicting values for a
+  retained trade ID fail the entire serving batch, leaving its output and
+  retry marker unchanged. Resolve the input conflict before retrying.
 - **Preserve matching state:** Do not delete a checkpoint, change its identity
   or remove database batch markers independently. Use a separate database and
   checkpoint for deliberate replay; never share a checkpoint between writers.
@@ -251,7 +275,7 @@ take longer to reach its limit.
   quarantine rows default to 60 minutes of database residence, pruned on batch
   commits. Candle history has no automatic pruning yet. There is no permanent
   archive or automatic recovery of messages missed during downtime.
-- **Event-time finalization:** The provisional watermark delay is 120 seconds.
+- **Event-time finalization:** The default watermark delay is 120 seconds.
   It is a lateness policy, not a dashboard refresh delay. Idle or stopped input
   can leave candles developing; a final candle does not prove complete capture.
 - **Local deployment:** One Kafka broker with replication factor one is useful

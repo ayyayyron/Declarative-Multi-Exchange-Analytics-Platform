@@ -85,7 +85,7 @@ async def consume_mexc_frames(
             ):
                 continue
 
-        capture_message(
+        await capture_message(
             message,
             source_channel=channel,
             received_at_ms=time.time_ns() // 1_000_000,

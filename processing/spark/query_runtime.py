@@ -23,6 +23,8 @@ def await_query_termination(query: StreamingQuery) -> None:
     try:
         while query.isActive and not stop_requested.is_set():
             query.awaitTermination(1)
+        if not stop_requested.is_set():
+            query.awaitTermination(1)
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)

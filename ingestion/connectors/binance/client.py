@@ -38,7 +38,7 @@ async def run_binance_session(
             if message is None:
                 return SessionExit.STOPPED
 
-            capture_message(
+            await capture_message(
                 message,
                 source_channel=url,
                 received_at_ms=time.time_ns() // 1_000_000,

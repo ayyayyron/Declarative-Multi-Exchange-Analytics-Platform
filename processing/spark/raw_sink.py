@@ -110,6 +110,7 @@ def persist_raw_batch(
         ).fetchone():
             return None
         staged = stage_events(connection, rows)
+        _validate_staged_events(connection)
         inserted = connection.execute(
             "INSERT INTO raw_market.live_trades SELECT * FROM raw_trade_batch "
             "ON CONFLICT DO NOTHING"
@@ -203,6 +204,46 @@ def persist_raw_batch(
             (retention_minutes,),
         )
     return staged, inserted, invalid
+
+
+def _validate_staged_events(connection: Connection[Any]) -> None:
+    """Reject conflicting identities before changing serving rows or counters."""
+    conflict = connection.execute("""
+        WITH identities AS (
+            SELECT event_id,source,symbol,trade_time,price,quantity,trade_side
+            FROM raw_trade_batch
+            UNION
+            SELECT t.event_id,t.source,t.symbol,t.trade_time,
+                t.price,t.quantity,t.trade_side
+            FROM raw_market.live_trades t
+            JOIN raw_trade_batch b ON b.event_id=t.event_id
+            UNION
+            SELECT t.event_id,t.source,t.symbol,t.trade_time,
+                t.price,t.quantity,t.trade_side
+            FROM raw_market.latest_trades t
+            JOIN raw_trade_batch b ON b.event_id=t.event_id
+        )
+        SELECT event_id FROM identities
+        GROUP BY event_id HAVING count(*) > 1 LIMIT 1
+        """).fetchone()
+    if conflict is not None:
+        raise ValueError(f"Conflicting duplicate trade: {conflict[0]}")
+    conflict = connection.execute("""
+        WITH locations AS (
+            SELECT source_kind,source_location,frame_event_index,event_id
+            FROM raw_trade_batch
+            UNION
+            SELECT t.source_kind,t.source_location,t.frame_event_index,t.event_id
+            FROM raw_market.live_trades t
+            JOIN raw_trade_batch b
+                USING (source_kind,source_location,frame_event_index)
+        )
+        SELECT source_location FROM locations
+        GROUP BY source_kind,source_location,frame_event_index
+        HAVING count(*) > 1 LIMIT 1
+        """).fetchone()
+    if conflict is not None:
+        raise ValueError(f"Conflicting source location: {conflict[0]}")
 
 
 def write_raw_batch(batch: DataFrame, batch_id: int, settings: Settings) -> None:
