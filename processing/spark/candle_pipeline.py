@@ -1,9 +1,11 @@
-"""Run opt-in one-minute candles from raw Kafka with separate recovery state."""
+"""Run one candle interval from raw Kafka with interval-specific recovery state."""
 
 import argparse
 from functools import partial
+from typing import cast
 
 from common.config import get_settings
+from common.contracts.candle import CANDLE_MILLISECONDS, CandleInterval
 from common.logging_config import configure_logging
 from processing.spark.candle_sink import candle_query_name, write_candle_batch
 from processing.spark.experimental_candles import prototype_candles
@@ -14,22 +16,28 @@ from processing.spark.session import build_spark
 from processing.spark.validation import valid_trade_records
 
 
-def run(available_now: bool = False) -> None:
-    """Start a candle-only query; never reuse the live-trade checkpoint or sink."""
+def run(available_now: bool = False, *, interval: CandleInterval = "1m") -> None:
+    """Start one interval with its own checkpoint and sink history."""
+    if interval not in CANDLE_MILLISECONDS:
+        raise ValueError("Supported candle intervals are 1m and 5m")
     settings = get_settings()
-    name = candle_query_name("1m")
+    name = candle_query_name(interval)
     spark = build_spark(settings, app_name=name)
     try:
         spark.sparkContext.setLogLevel("WARN")
         raw = read_raw_frames(spark, settings)
         valid = valid_trade_records(normalize_raw_frames(raw))
         candles = prototype_candles(
-            valid, watermark_delay=f"{settings.candle_watermark_delay_seconds} seconds"
+            valid,
+            watermark_delay=f"{settings.candle_watermark_delay_seconds} seconds",
+            interval=interval,
         )
         writer = (
             candles.writeStream.queryName(name)
             .outputMode("update")
-            .foreachBatch(partial(write_candle_batch, settings=settings, interval="1m"))
+            .foreachBatch(
+                partial(write_candle_batch, settings=settings, interval=interval)
+            )
             .option("checkpointLocation", str(settings.checkpoint_base_dir / name))
         )
         if available_now:
@@ -46,7 +54,13 @@ def run(available_now: bool = False) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Aggregate raw Kafka trades into one-minute PostgreSQL candles"
+        description="Aggregate raw Kafka trades into PostgreSQL candles"
+    )
+    parser.add_argument(
+        "--interval",
+        choices=("1m", "5m"),
+        default="1m",
+        help="candle interval (default: 1m)",
     )
     parser.add_argument(
         "--available-now",
@@ -55,7 +69,10 @@ def main() -> None:
     )
     args = parser.parse_args()
     configure_logging(get_settings().log_level)
-    run(available_now=bool(args.available_now))
+    run(
+        available_now=bool(args.available_now),
+        interval=cast(CandleInterval, args.interval),
+    )
 
 
 if __name__ == "__main__":

@@ -8,11 +8,11 @@ from dashboard.charts import candle_chart, candle_table
 from dashboard.queries import StoredCandle, fetch_candles
 
 
-def sample_candle(final: bool = False) -> StoredCandle:
-    start = datetime(2026, 10, 19, 14, 33, tzinfo=UTC)
+def sample_candle(final: bool = False, interval: str = "1m") -> StoredCandle:
+    start = datetime(2026, 10, 19, 14, 30 if interval == "5m" else 33, tzinfo=UTC)
     return StoredCandle(
         window_start=start,
-        window_end=start + timedelta(minutes=1),
+        window_end=start + timedelta(minutes=5 if interval == "5m" else 1),
         open=Decimal("100"),
         high=Decimal("102"),
         low=Decimal("99"),
@@ -25,8 +25,9 @@ def sample_candle(final: bool = False) -> StoredCandle:
     )
 
 
-def test_fetch_candles_preserves_decimals_and_utc_boundaries() -> None:
-    candle = sample_candle()
+@pytest.mark.parametrize("interval", ["1m", "5m"])
+def test_fetch_candles_preserves_decimals_and_utc_boundaries(interval: str) -> None:
+    candle = sample_candle(interval=interval)
     connection = Mock()
     connection.execute.return_value.fetchall.return_value = [
         (
@@ -43,11 +44,11 @@ def test_fetch_candles_preserves_decimals_and_utc_boundaries() -> None:
             candle.updated_at,
         )
     ]
-    result = fetch_candles(connection, "ETHUSDT", "mexc")
+    result = fetch_candles(connection, "ETHUSDT", "mexc", interval=interval)
     assert result == [candle]
-    assert connection.execute.call_args.args[1] == ("ETHUSDT", "mexc", 200)
+    assert connection.execute.call_args.args[1] == ("ETHUSDT", "mexc", interval, 200)
     query = connection.execute.call_args.args[0]
-    assert "interval='1m'" in query and "LIMIT %s" in query
+    assert "interval=%s" in query and "LIMIT %s" in query
     assert "ORDER BY window_start_ms" in query
 
 
@@ -62,6 +63,13 @@ def test_candle_read_is_bounded(limit: int) -> None:
 def test_unknown_exchange_is_rejected() -> None:
     with pytest.raises(ValueError, match="exchange"):
         fetch_candles(Mock(), "BTCUSDT", "unknown")
+
+
+def test_unknown_interval_is_rejected_before_querying() -> None:
+    connection = Mock()
+    with pytest.raises(ValueError, match="interval"):
+        fetch_candles(connection, "BTCUSDT", "binance", interval="5m' OR true--")
+    connection.execute.assert_not_called()
 
 
 def test_candle_chart_has_wick_body_doji_and_volume_with_utc_axis() -> None:

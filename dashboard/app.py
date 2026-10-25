@@ -10,6 +10,7 @@ import streamlit as st
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 from common.config import get_settings
+from common.contracts.candle import DISPLAY_CANDLE_INTERVALS
 from dashboard.charts import candle_chart, candle_table
 from dashboard.queries import (
     LatestTrade,
@@ -175,16 +176,22 @@ def live_market() -> None:
 def candle_market() -> None:
     """Refresh persisted candles without coupling them to trade-pipeline health."""
     st.divider()
-    st.subheader("1-minute candles")
+    st.subheader("Market candles")
     exchange = st.selectbox(
         "Candle exchange", ["Binance", "MEXC"], key="candle_exchange"
+    )
+    interval = st.selectbox(
+        "Candle interval", list(DISPLAY_CANDLE_INTERVALS), key="candle_interval"
     )
     try:
         with database_pool(str(settings.postgres_dsn)).connection() as connection:
             candles = fetch_candles(
-                connection, settings.dashboard_symbol, exchange.lower()
+                connection,
+                settings.dashboard_symbol,
+                exchange.lower(),
+                interval=interval,
             )
-    except psycopg.errors.UndefinedTable:
+    except (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedFunction):
         st.info(
             "Candle tables are not installed. Run make db-migrate, then make candles."
         )
@@ -193,9 +200,11 @@ def candle_market() -> None:
         st.error(f"Candle data is unavailable: {type(error).__name__}")
         return
     if not candles:
+        base_interval = interval if interval in ("1m", "5m") else "5m"
         st.info(
-            f"No 1-minute candles for {exchange} {settings.dashboard_symbol}. "
-            "Run ingestion and make candles to populate this view."
+            f"No {interval} candles for {exchange} {settings.dashboard_symbol}. "
+            f"Run ingestion and make candles CANDLE_INTERVAL={base_interval} "
+            "to populate this view."
         )
         return
 
@@ -204,13 +213,31 @@ def candle_market() -> None:
     metrics[0].metric("Candle close (USDT)", f"{latest.close:,.2f}")
     metrics[1].metric("Candle volume (base asset)", f"{latest.volume:,.10f}")
     metrics[2].metric("Candle trades", f"{latest.trade_count:,}")
-    metrics[3].metric("Candle status", "FINAL" if latest.is_final else "DEVELOPING")
+    metrics[3].metric("Candle status", latest.status.upper())
     last_write = latest.updated_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    version = (
+        f"revision {latest.revision}"
+        if latest.revision is not None
+        else "computed from current 5m snapshots"
+    )
     st.caption(
         f"Latest interval: [{latest.window_start:%Y-%m-%d %H:%M:%S}, "
-        f"{latest.window_end:%H:%M:%S}) UTC · revision {latest.revision} · "
+        f"{latest.window_end:%H:%M:%S}) UTC · {version} · "
         f"last write {last_write} UTC"
     )
+    if latest.base_windows is not None:
+        st.caption(
+            f"Observed 5m windows: {latest.base_windows}/{latest.expected_windows}"
+        )
+        if latest.base_windows != latest.expected_windows:
+            st.warning(
+                "Partial base-window coverage: some slots are future, empty or "
+                "uncaptured. No missing candles are filled."
+            )
+        st.caption(
+            "Full slot coverage does not prove complete exchange capture. Partial "
+            "means all observed base candles are final, but not all slots are present."
+        )
     if age_seconds(latest.updated_at) > settings.dashboard_stale_after_seconds:
         st.warning(
             "Candle updates are stale. A developing candle can remain open "

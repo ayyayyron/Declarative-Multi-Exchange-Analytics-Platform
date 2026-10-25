@@ -1,5 +1,6 @@
 # Local configuration and credentials
 .env
+.env.grafana
 config/feeds.yaml
 
 # Python environments and caches

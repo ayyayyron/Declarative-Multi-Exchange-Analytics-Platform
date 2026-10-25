@@ -1,7 +1,7 @@
 """Presentation-only candle charts; all aggregates come from PostgreSQL."""
 
 from collections.abc import Sequence
-from typing import cast
+from typing import Literal, cast
 
 import altair as alt
 import pandas as pd
@@ -11,6 +11,12 @@ from dashboard.queries import StoredCandle
 
 def candle_chart(candles: Sequence[StoredCandle]) -> tuple[alt.LayerChart, alt.Chart]:
     """Draw responsive price/volume panels with the same explicit UTC domain."""
+    duration = (candles[0].window_end - candles[0].window_start).total_seconds()
+    tick_unit: Literal["minute", "hour", "day", "week"] = (
+        "week"
+        if duration >= 604800
+        else "day" if duration >= 86400 else "hour" if duration >= 3600 else "minute"
+    )
     frame = pd.DataFrame(
         [
             {
@@ -23,7 +29,7 @@ def candle_chart(candles: Sequence[StoredCandle]) -> tuple[alt.LayerChart, alt.C
                     for name in ("open", "high", "low", "close", "volume")
                 },
                 "trade_count": candle.trade_count,
-                "status": "Final" if candle.is_final else "Developing",
+                "status": candle.status,
             }
             for candle in candles
         ]
@@ -37,7 +43,7 @@ def candle_chart(candles: Sequence[StoredCandle]) -> tuple[alt.LayerChart, alt.C
                 nice=False,
                 domain=[candles[0].window_start, candles[-1].window_end],
             ),
-            axis=alt.Axis(format="%b %d %H:%M", tickCount="minute", labelOverlap=True),
+            axis=alt.Axis(format="%b %d %H:%M", tickCount=tick_unit, labelOverlap=True),
         ),
         color=alt.condition(
             alt.datum.close >= alt.datum.open,
@@ -94,8 +100,13 @@ def candle_table(candles: Sequence[StoredCandle]) -> pd.DataFrame:
                 "Close": str(c.close),
                 "Volume (base asset)": str(c.volume),
                 "Trades": c.trade_count,
-                "Revision": c.revision,
-                "Status": "Final" if c.is_final else "Developing",
+                "Revision": c.revision if c.revision is not None else "Computed",
+                "Status": c.status,
+                **(
+                    {"Observed 5m windows": f"{c.base_windows}/{c.expected_windows}"}
+                    if c.base_windows is not None
+                    else {}
+                ),
             }
             for c in reversed(candles)
         ]

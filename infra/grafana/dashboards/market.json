@@ -1,0 +1,410 @@
+{
+  "uid": "market-platform",
+  "title": "Multi-Exchange Market Analytics",
+  "description": "Market analytics on PostgreSQL; Streamlit is also available.",
+  "tags": [
+    "market-data",
+    "streaming"
+  ],
+  "schemaVersion": 41,
+  "version": 1,
+  "timezone": "utc",
+  "editable": false,
+  "refresh": "5s",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Read this first",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Local read-only dashboard \u00b7 UTC.** Stored samples may be stale; run ingestion and Spark for updates.\n\nLast-trade differences are **not executable bid/ask spreads**. Larger candles use 5m snapshots; missing slots are never filled."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Latest trades \u00b7 $symbol",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "market-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 10,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "market-postgres"
+          },
+          "rawSql": "\n            SELECT CASE WHEN trade_time >= now()-interval '15 seconds'\n                    THEN 'LIVE' ELSE 'STALE' END AS freshness,\n                source,price,\n                round(greatest(0,extract(epoch FROM now()-trade_time)))\n                    AS \"Age (seconds)\",trade_time AS \"Trade time\"\n            FROM raw_market.latest_trades WHERE symbol=${symbol:sqlstring} ORDER BY source\n        ",
+          "format": "table",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 3,
+      "title": "MEXC \u2212 Binance \u00b7 last-trade difference",
+      "type": "stat",
+      "datasource": {
+        "type": "postgres",
+        "uid": "market-postgres"
+      },
+      "gridPos": {
+        "x": 10,
+        "y": 3,
+        "w": 7,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "market-postgres"
+          },
+          "rawSql": "\n            SELECT m.price-b.price AS \"Difference (USDT)\",\n                10000*(m.price-b.price)/((m.price+b.price)/2)\n                    AS \"Symmetric spread (bps)\"\n            FROM raw_market.latest_trades b\n            JOIN raw_market.latest_trades m USING(symbol)\n            WHERE b.source='binance' AND m.source='mexc' AND b.symbol=${symbol:sqlstring}\n        ",
+          "format": "table",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 4,
+      "title": "Trade pipeline \u00b7 all symbols",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "market-postgres"
+      },
+      "gridPos": {
+        "x": 17,
+        "y": 3,
+        "w": 7,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "market-postgres"
+          },
+          "rawSql": "\n            SELECT CASE WHEN last_successful_batch_at >= now()-interval '15 seconds'\n                    THEN 'LIVE' ELSE 'STALE' END AS status,\n                events_processed,events_rejected,\n                last_successful_batch_at AS \"Last commit\"\n            FROM raw_market.pipeline_status\n            WHERE component='spark-live-market' AND source='all'\n        ",
+          "format": "table",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 5,
+      "title": "$symbol \u00b7 $exchange \u00b7 $interval candles",
+      "type": "candlestick",
+      "datasource": {
+        "type": "postgres",
+        "uid": "market-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 16,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "market-postgres"
+          },
+          "rawSql": "\nWITH selected AS (\n    SELECT window_start_ms,window_end_ms,open,high,low,close,volume,trade_count,\n        is_final,updated_at,revision::text AS revision,\n        NULL::bigint AS base_windows,NULL::bigint AS expected_windows,\n        NULL::boolean AS all_observed_final\n    FROM (SELECT * FROM raw_market.candles\n        WHERE source=${exchange:sqlstring} AND symbol=${symbol:sqlstring} AND interval=${interval:sqlstring}\n        ORDER BY window_start_ms DESC LIMIT 200) b\n    WHERE ${interval:sqlstring} IN ('1m','5m')\n    UNION ALL\n    SELECT window_start_ms,window_end_ms,open,high,low,close,volume,trade_count,\n        is_final,updated_at,'Computed',base_windows,expected_windows,all_observed_final\n    FROM raw_market.candle_rollups(${exchange:sqlstring},${symbol:sqlstring},\n        CASE WHEN ${interval:sqlstring} IN ('15m','1h','1d','1w')\n            THEN ${interval:sqlstring} ELSE '15m' END,200)\n    WHERE ${interval:sqlstring} NOT IN ('1m','5m')\n), visible AS (\n    SELECT *, CASE WHEN is_final THEN 'Final'\n        WHEN all_observed_final THEN 'Partial' ELSE 'Developing' END AS status,\n        CASE WHEN base_windows IS NULL THEN 'Base candle'\n        ELSE base_windows::text || '/' || expected_windows::text END AS coverage\n    FROM selected\n    WHERE window_end_ms > $__unixEpochFrom()::bigint * 1000\n        AND window_start_ms < $__unixEpochTo()::bigint * 1000\n)\nSELECT to_timestamp(window_start_ms/1000.0) AS time,open,high,low,close,volume FROM visible ORDER BY window_start_ms",
+          "format": "table",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "mode": "candles",
+        "candleStyle": "candles",
+        "colorStrategy": "open-close"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Latest visible candle \u00b7 status and coverage",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "market-postgres"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "market-postgres"
+          },
+          "rawSql": "\nWITH selected AS (\n    SELECT window_start_ms,window_end_ms,open,high,low,close,volume,trade_count,\n        is_final,updated_at,revision::text AS revision,\n        NULL::bigint AS base_windows,NULL::bigint AS expected_windows,\n        NULL::boolean AS all_observed_final\n    FROM (SELECT * FROM raw_market.candles\n        WHERE source=${exchange:sqlstring} AND symbol=${symbol:sqlstring} AND interval=${interval:sqlstring}\n        ORDER BY window_start_ms DESC LIMIT 200) b\n    WHERE ${interval:sqlstring} IN ('1m','5m')\n    UNION ALL\n    SELECT window_start_ms,window_end_ms,open,high,low,close,volume,trade_count,\n        is_final,updated_at,'Computed',base_windows,expected_windows,all_observed_final\n    FROM raw_market.candle_rollups(${exchange:sqlstring},${symbol:sqlstring},\n        CASE WHEN ${interval:sqlstring} IN ('15m','1h','1d','1w')\n            THEN ${interval:sqlstring} ELSE '15m' END,200)\n    WHERE ${interval:sqlstring} NOT IN ('1m','5m')\n), visible AS (\n    SELECT *, CASE WHEN is_final THEN 'Final'\n        WHEN all_observed_final THEN 'Partial' ELSE 'Developing' END AS status,\n        CASE WHEN base_windows IS NULL THEN 'Base candle'\n        ELSE base_windows::text || '/' || expected_windows::text END AS coverage\n    FROM selected\n    WHERE window_end_ms > $__unixEpochFrom()::bigint * 1000\n        AND window_start_ms < $__unixEpochTo()::bigint * 1000\n)\n\n            SELECT status,\n                CASE WHEN updated_at >= now()-interval '15 seconds'\n                    THEN 'FRESH' ELSE 'STALE' END AS freshness,\n                coverage,close::text,volume::text,trade_count,revision,\n                to_timestamp(window_start_ms/1000.0) AS \"Start (UTC)\",\n                to_timestamp(window_end_ms/1000.0) AS \"End (exclusive)\",\n                updated_at AS \"Last base update\"\n            FROM visible ORDER BY window_start_ms DESC LIMIT 1\n        ",
+          "format": "table",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 7,
+      "title": "Base-asset volume \u00b7 $interval",
+      "type": "barchart",
+      "datasource": {
+        "type": "postgres",
+        "uid": "market-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "market-postgres"
+          },
+          "rawSql": "\nWITH selected AS (\n    SELECT window_start_ms,window_end_ms,open,high,low,close,volume,trade_count,\n        is_final,updated_at,revision::text AS revision,\n        NULL::bigint AS base_windows,NULL::bigint AS expected_windows,\n        NULL::boolean AS all_observed_final\n    FROM (SELECT * FROM raw_market.candles\n        WHERE source=${exchange:sqlstring} AND symbol=${symbol:sqlstring} AND interval=${interval:sqlstring}\n        ORDER BY window_start_ms DESC LIMIT 200) b\n    WHERE ${interval:sqlstring} IN ('1m','5m')\n    UNION ALL\n    SELECT window_start_ms,window_end_ms,open,high,low,close,volume,trade_count,\n        is_final,updated_at,'Computed',base_windows,expected_windows,all_observed_final\n    FROM raw_market.candle_rollups(${exchange:sqlstring},${symbol:sqlstring},\n        CASE WHEN ${interval:sqlstring} IN ('15m','1h','1d','1w')\n            THEN ${interval:sqlstring} ELSE '15m' END,200)\n    WHERE ${interval:sqlstring} NOT IN ('1m','5m')\n), visible AS (\n    SELECT *, CASE WHEN is_final THEN 'Final'\n        WHEN all_observed_final THEN 'Partial' ELSE 'Developing' END AS status,\n        CASE WHEN base_windows IS NULL THEN 'Base candle'\n        ELSE base_windows::text || '/' || expected_windows::text END AS coverage\n    FROM selected\n    WHERE window_end_ms > $__unixEpochFrom()::bigint * 1000\n        AND window_start_ms < $__unixEpochTo()::bigint * 1000\n)\n\n            SELECT to_timestamp(window_start_ms/1000.0) AS time,volume\n            FROM visible ORDER BY window_start_ms\n        ",
+          "format": "table",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "xField": "time",
+        "showValue": "never"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Candle inspection \u00b7 exact decimal strings",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "market-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "market-postgres"
+          },
+          "rawSql": "\nWITH selected AS (\n    SELECT window_start_ms,window_end_ms,open,high,low,close,volume,trade_count,\n        is_final,updated_at,revision::text AS revision,\n        NULL::bigint AS base_windows,NULL::bigint AS expected_windows,\n        NULL::boolean AS all_observed_final\n    FROM (SELECT * FROM raw_market.candles\n        WHERE source=${exchange:sqlstring} AND symbol=${symbol:sqlstring} AND interval=${interval:sqlstring}\n        ORDER BY window_start_ms DESC LIMIT 200) b\n    WHERE ${interval:sqlstring} IN ('1m','5m')\n    UNION ALL\n    SELECT window_start_ms,window_end_ms,open,high,low,close,volume,trade_count,\n        is_final,updated_at,'Computed',base_windows,expected_windows,all_observed_final\n    FROM raw_market.candle_rollups(${exchange:sqlstring},${symbol:sqlstring},\n        CASE WHEN ${interval:sqlstring} IN ('15m','1h','1d','1w')\n            THEN ${interval:sqlstring} ELSE '15m' END,200)\n    WHERE ${interval:sqlstring} NOT IN ('1m','5m')\n), visible AS (\n    SELECT *, CASE WHEN is_final THEN 'Final'\n        WHEN all_observed_final THEN 'Partial' ELSE 'Developing' END AS status,\n        CASE WHEN base_windows IS NULL THEN 'Base candle'\n        ELSE base_windows::text || '/' || expected_windows::text END AS coverage\n    FROM selected\n    WHERE window_end_ms > $__unixEpochFrom()::bigint * 1000\n        AND window_start_ms < $__unixEpochTo()::bigint * 1000\n)\n\n            SELECT to_timestamp(window_start_ms/1000.0) AS \"Start (UTC)\",\n                to_timestamp(window_end_ms/1000.0) AS \"End (exclusive)\",\n                open::text,high::text,low::text,close::text,volume::text,\n                trade_count,status,coverage,revision\n            FROM visible ORDER BY window_start_ms DESC\n        ",
+          "format": "table",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 9,
+      "title": "Recent trades \u00b7 $symbol",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "market-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "market-postgres"
+          },
+          "rawSql": "\n            SELECT trade_time,source,price::text,quantity::text,trade_side\n            FROM raw_market.live_trades WHERE symbol=${symbol:sqlstring}\n                AND $__timeFilter(trade_time)\n            ORDER BY trade_time DESC,event_id DESC LIMIT 50\n        ",
+          "format": "table",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "symbol",
+        "label": "Symbol",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "market-postgres"
+        },
+        "query": "SELECT symbol FROM raw_market.latest_trades UNION SELECT symbol FROM raw_market.candles ORDER BY 1",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "current": {
+          "text": "BTCUSDT",
+          "value": "BTCUSDT"
+        },
+        "options": []
+      },
+      {
+        "name": "exchange",
+        "label": "Exchange",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "market-postgres"
+        },
+        "query": "SELECT DISTINCT source FROM raw_market.candles ORDER BY 1",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "current": {
+          "text": "binance",
+          "value": "binance"
+        },
+        "options": []
+      },
+      {
+        "name": "interval",
+        "label": "Interval",
+        "type": "custom",
+        "query": "1m,5m,15m,1h,1d,1w",
+        "current": {
+          "text": "5m",
+          "value": "5m"
+        },
+        "options": [
+          {
+            "text": "1m",
+            "value": "1m",
+            "selected": false
+          },
+          {
+            "text": "5m",
+            "value": "5m",
+            "selected": true
+          },
+          {
+            "text": "15m",
+            "value": "15m",
+            "selected": false
+          },
+          {
+            "text": "1h",
+            "value": "1h",
+            "selected": false
+          },
+          {
+            "text": "1d",
+            "value": "1d",
+            "selected": false
+          },
+          {
+            "text": "1w",
+            "value": "1w",
+            "selected": false
+          }
+        ],
+        "multi": false,
+        "includeAll": false
+      }
+    ]
+  }
+}

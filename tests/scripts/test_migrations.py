@@ -10,6 +10,7 @@ def test_migrations_are_ordered_and_immutable_by_checksum() -> None:
         "003_create_live_market_tables.sql",
         "004_create_raw_market_serving.sql",
         "005_create_candle_serving.sql",
+        "006_create_candle_rollups.sql",
     ]
     assert migration_checksum("SELECT 1;") == migration_checksum("SELECT 1;")
     assert migration_checksum("SELECT 1;") != migration_checksum("SELECT 2;")

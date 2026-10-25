@@ -9,7 +9,16 @@ from common.contracts.types import Decimal28x10, Exchange
 
 PositiveInteger = Annotated[int, Field(strict=True, gt=0)]
 CandleInterval = Literal["1m", "5m"]
+DisplayCandleInterval = Literal["1m", "5m", "15m", "1h", "1d", "1w"]
 CANDLE_MILLISECONDS: dict[CandleInterval, int] = {"1m": 60_000, "5m": 300_000}
+DISPLAY_CANDLE_INTERVALS: tuple[DisplayCandleInterval, ...] = (
+    "1m",
+    "5m",
+    "15m",
+    "1h",
+    "1d",
+    "1w",
+)
 
 
 class CandleSnapshot(BaseModel):

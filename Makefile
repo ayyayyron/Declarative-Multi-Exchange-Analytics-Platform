@@ -2,8 +2,10 @@ SHELL := /bin/bash
 
 PYTHON := .venv/bin/python
 FEEDS_CONFIG ?= config/feeds.yaml
+CANDLE_INTERVAL ?= 1m
 .PHONY: raw-quarantine-smoke
 .PHONY: candles candles-once
+.PHONY: grafana-up grafana-stop grafana-build
 JAVA_17_HOME := $(shell brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home
 export JAVA_HOME := $(JAVA_17_HOME)
 export PYSPARK_PYTHON := $(abspath $(PYTHON))
@@ -26,9 +28,11 @@ help:
 	@echo "make spark-consumer-once  Consume available trades and then stop"
 	@echo "make live-pipeline        Stream validated trades into PostgreSQL"
 	@echo "make live-pipeline-once   Sink available trades and then stop"
-	@echo "make candles              Run separate one-minute candle aggregation"
+	@echo "make candles              Run candles (CANDLE_INTERVAL=1m or 5m)"
 	@echo "make candles-once         Aggregate available input and then stop"
 	@echo "make dashboard            Start Streamlit on localhost:8501"
+	@echo "make grafana-up           Start optional Grafana on localhost:3000"
+	@echo "make grafana-stop         Stop Grafana, preserving its settings"
 	@echo "make ingestion          Stream the configured YAML watchlists"
 	@echo "make ingestion-plan     Validate and print the YAML worker plan"
 	@echo "make ingestion-binance  Stream Binance trades into Kafka until stopped"
@@ -78,13 +82,13 @@ infra-up:
 	docker compose up --detach
 
 infra-down:
-	docker compose down
+	docker compose --profile grafana down
 
 infra-stop:
-	docker compose stop
+	docker compose --profile grafana stop
 
 infra-status:
-	docker compose ps
+	docker compose --profile grafana ps
 
 infra-logs:
 	docker compose logs --tail=100
@@ -109,13 +113,23 @@ live-pipeline-once:
 	$(PYTHON) -m processing.spark.main --available-now
 
 candles:
-	$(PYTHON) -m processing.spark.candle_pipeline
+	$(PYTHON) -m processing.spark.candle_pipeline --interval "$(CANDLE_INTERVAL)"
 
 candles-once:
-	$(PYTHON) -m processing.spark.candle_pipeline --available-now
+	$(PYTHON) -m processing.spark.candle_pipeline --interval "$(CANDLE_INTERVAL)" --available-now
 
 dashboard:
 	$(PYTHON) -m streamlit run dashboard/app.py --server.address 127.0.0.1
+
+grafana-build:
+	$(PYTHON) -m scripts.grafana_dashboard
+
+grafana-up: grafana-build
+	$(PYTHON) -m scripts.setup_grafana
+	docker compose --profile grafana up --detach --no-deps grafana
+
+grafana-stop:
+	docker compose --profile grafana stop grafana
 
 ingestion:
 	$(PYTHON) -m ingestion.main --config "$(FEEDS_CONFIG)"

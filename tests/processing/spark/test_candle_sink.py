@@ -13,6 +13,8 @@ from pyspark.sql import Row, SparkSession
 from pyspark.sql.utils import StreamingQueryException
 
 from common.config import Settings
+from common.contracts.candle import CandleInterval
+from dashboard.queries import fetch_candles
 from processing.spark.candle_sink import (
     CandleBatchResult,
     candle_query_name,
@@ -60,12 +62,13 @@ def snapshot(**changes: object) -> Row:
     return Row(**(values() | changes))
 
 
-def stored(dsn: str) -> tuple[object, ...]:
+def stored(dsn: str, interval: CandleInterval = "1m") -> tuple[object, ...]:
     with psycopg.connect(dsn) as connection:
         result = connection.execute(
             "SELECT revision,volume,trade_count,is_final,last_batch_id "
             "FROM raw_market.candles WHERE source='binance' AND symbol='BTCUSDT' "
-            "AND interval='1m' AND window_start_ms=1792317600000"
+            "AND interval=%s AND window_start_ms=1792317600000",
+            (interval,),
         ).fetchone()
     assert result is not None
     return result
@@ -207,6 +210,12 @@ def test_intervals_have_independent_owners_and_wrong_interval_rolls_back(
     assert persist_candle_batch(
         dsn, second, 0, [five], interval="5m"
     ) == CandleBatchResult(1, 1, 0, 0)
+    with psycopg.connect(dsn) as connection:
+        one_rows = fetch_candles(connection, "BTCUSDT", "binance", interval="1m")
+        five_rows = fetch_candles(connection, "BTCUSDT", "binance", interval="5m")
+    assert len(one_rows) == len(five_rows) == 1
+    assert (one_rows[0].window_end - one_rows[0].window_start).total_seconds() == 60
+    assert (five_rows[0].window_end - five_rows[0].window_start).total_seconds() == 300
 
 
 def test_concurrent_retries_commit_only_once(dsn: str) -> None:
@@ -227,8 +236,9 @@ def test_empty_batch_has_a_retry_marker(dsn: str) -> None:
     assert persist_candle_batch(dsn, history, 0, []) is None
 
 
+@pytest.mark.parametrize("interval", ["1m", "5m"])
 def test_spark_commit_before_checkpoint_recovery(
-    dsn: str, spark: SparkSession, tmp_path: Path
+    dsn: str, spark: SparkSession, tmp_path: Path, interval: CandleInterval
 ) -> None:
     incoming = tmp_path / "incoming"
     incoming.mkdir()
@@ -237,16 +247,16 @@ def test_spark_commit_before_checkpoint_recovery(
         str(incoming)
     )
     settings = Settings(postgres_dsn=dsn, checkpoint_base_dir=tmp_path / "checkpoints")
-    checkpoint = settings.checkpoint_base_dir / candle_query_name("1m")
+    checkpoint = settings.checkpoint_base_dir / candle_query_name(interval)
 
     def commit_then_fail(batch, batch_id):
-        write_candle_batch(batch, batch_id, settings)
+        write_candle_batch(batch, batch_id, settings, interval=interval)
         raise RuntimeError("simulated failure after database commit")
 
     def start_query(callback):
         stream = spark.readStream.schema(trades.schema).json(str(incoming))
         return (
-            prototype_candles(stream)
+            prototype_candles(stream, interval=interval)
             .writeStream.outputMode("update")
             .foreachBatch(callback)
             .option("checkpointLocation", str(checkpoint))
@@ -259,18 +269,21 @@ def test_spark_commit_before_checkpoint_recovery(
             query.processAllAvailable()
     finally:
         query.stop()
-    assert stored(dsn)[:4] == (1, Decimal("3"), 2, False)
+    assert stored(dsn, interval)[:4] == (1, Decimal("3"), 2, False)
 
     query = start_query(
-        lambda batch, batch_id: write_candle_batch(batch, batch_id, settings)
+        lambda batch, batch_id: write_candle_batch(
+            batch, batch_id, settings, interval=interval
+        )
     )
     try:
         query.processAllAvailable()
-        assert stored(dsn)[:4] == (1, Decimal("3"), 2, False)
+        assert stored(dsn, interval)[:4] == (1, Decimal("3"), 2, False)
         trades.filter("event_id IN ('a','c','d')").coalesce(1).write.mode(
             "append"
         ).json(str(incoming))
         query.processAllAvailable()
-        assert stored(dsn)[:4] == (2, Decimal("6"), 3, False)
+        expected = (Decimal("6"), 3) if interval == "1m" else (Decimal("7"), 4)
+        assert stored(dsn, interval)[:4] == (2, *expected, False)
     finally:
         query.stop()

@@ -7,6 +7,12 @@ from typing import Any
 
 from psycopg import Connection, sql
 
+from common.contracts.candle import (
+    CANDLE_MILLISECONDS,
+    DISPLAY_CANDLE_INTERVALS,
+    DisplayCandleInterval,
+)
+
 
 def serving_sql(query: str, schema: str) -> sql.Composed:
     if schema not in ("analytics", "raw_market"):
@@ -44,27 +50,69 @@ class StoredCandle:
     close: Decimal
     volume: Decimal
     trade_count: int
-    revision: int
+    revision: int | None
     is_final: bool
     updated_at: datetime
+    base_windows: int | None = None
+    expected_windows: int | None = None
+    all_observed_final: bool | None = None
+
+    @property
+    def status(self) -> str:
+        if self.is_final:
+            return "Final"
+        if self.all_observed_final:
+            return "Partial"
+        return "Developing"
 
 
 def fetch_candles(
-    connection: Connection[Any], symbol: str, source: str, limit: int = 200
+    connection: Connection[Any],
+    symbol: str,
+    source: str,
+    limit: int = 200,
+    *,
+    interval: DisplayCandleInterval = "1m",
 ) -> list[StoredCandle]:
-    """Read a bounded, chronological view of stored one-minute snapshots."""
+    """Read bounded, chronological snapshots for one venue, symbol and interval."""
+    if interval not in DISPLAY_CANDLE_INTERVALS:
+        raise ValueError("Unsupported candle interval")
     if source not in ("binance", "mexc"):
         raise ValueError("Unsupported candle exchange")
     if type(limit) is not int or not 1 <= limit <= 2_000:
         raise ValueError("Candle limit must be between 1 and 2000")
+    if interval not in CANDLE_MILLISECONDS:
+        rows = connection.execute(
+            "SELECT * FROM raw_market.candle_rollups(%s,%s,%s,%s)",
+            (source, symbol, interval, limit),
+        ).fetchall()
+        return [
+            StoredCandle(
+                window_start=datetime.fromtimestamp(row[0] / 1000, tz=UTC),
+                window_end=datetime.fromtimestamp(row[1] / 1000, tz=UTC),
+                open=Decimal(row[2]),
+                high=Decimal(row[3]),
+                low=Decimal(row[4]),
+                close=Decimal(row[5]),
+                volume=Decimal(row[6]),
+                trade_count=int(row[7]),
+                revision=None,
+                is_final=bool(row[8]),
+                updated_at=row[9],
+                base_windows=int(row[10]),
+                expected_windows=int(row[11]),
+                all_observed_final=bool(row[12]),
+            )
+            for row in rows
+        ]
     rows = connection.execute(
         "SELECT window_start_ms,window_end_ms,open,high,low,close,volume,"
         "trade_count,revision,is_final,updated_at FROM ("
         "SELECT * FROM raw_market.candles "
-        "WHERE symbol=%s AND source=%s AND interval='1m' "
+        "WHERE symbol=%s AND source=%s AND interval=%s "
         "ORDER BY window_start_ms DESC LIMIT %s"
         ") AS recent ORDER BY window_start_ms",
-        (symbol, source, limit),
+        (symbol, source, interval, limit),
     ).fetchall()
     return [
         StoredCandle(

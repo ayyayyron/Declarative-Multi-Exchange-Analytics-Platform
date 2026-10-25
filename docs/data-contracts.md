@@ -99,8 +99,13 @@ isolated database/checkpoint procedure. There is no permanent archive or S3 read
 
 `common/contracts/candle.py` validates the output of the isolated candle
 prototype. Its business key is `(source, symbol, interval, window_start_ms)`;
-the exclusive end must match the aligned interval. The sink accepts `1m` and
-`5m`, but the custom stateful processor currently produces only `1m`.
+the exclusive end must match the aligned interval. The sink and custom stateful
+processor support `1m` and `5m`. `prototype_candles(..., interval="5m")` builds
+five-minute state directly from trades, not by summing one-minute snapshots.
+Each interval uses a separate query/checkpoint. The runner accepts
+`--interval 1m|5m` (default `1m`); `make candles CANDLE_INTERVAL=5m` selects the
+five-minute query. Dashboard interval selection reads existing snapshots, not
+an aggregation of stored one-minute versions.
 
 OHLC uses decimal(28,10); base-asset volume uses decimal(38,10). Count and
 revision are positive integers. Each snapshot replaces the previous totals,
@@ -118,9 +123,47 @@ protocol, not a Kafka/ClickHouse exactly-once claim. The new migration/writer
 are connected through `processing.spark.candle_pipeline`, a separate opt-in
 raw-Kafka query. The default trade runner is unchanged; Streamlit now reads
 these stored snapshots in its separate candle section. The read is bounded to
-200 recent candles per selected exchange/symbol, ordered chronologically.
+200 recent candles per selected exchange/symbol/interval, ordered chronologically.
 Charts use floats only for rendering; the inspection table preserves exact
 decimal strings and explicit UTC boundaries. Missing windows are not filled.
 Use `make db-migrate` before `make candles` or `make candles-once`; the latter
 does not force recent windows to finalize. The candle checkpoint is
-`checkpoints/candles-1m-postgres-v1`, separate from trade checkpoints.
+`checkpoints/candles-1m-postgres-v1` or `checkpoints/candles-5m-postgres-v1`,
+separate from each other and the trade checkpoints. Do not reuse one interval's
+state for another. Both intervals currently use the same configured watermark
+delay, independent of their window duration; five-minute state can retain more
+IDs and needs its own capacity measurements.
+
+## Read-time larger candle rollups
+
+Migration `006_create_candle_rollups.sql` adds the stable, read-only function
+`raw_market.candle_rollups(source, symbol, interval, limit)`. It supports `15m`,
+`1h`, `1d` and `1w`, exclusively from current `5m` rows. One-minute rows and
+batch/revision history are not summed. Updating a base snapshot changes the
+next query result; no new Spark query, checkpoint or materialized refresh is needed.
+
+Open comes from the earliest base candle; close from the latest. High/low use
+max/min; volume and trade count are summed with exact numeric arithmetic.
+Windows are fixed UTC intervals, with days beginning at midnight and weeks at
+Monday midnight. End boundaries are exclusive. Limit selects the latest parent
+windows, returned chronologically. Reads are capped at `limit * expected_slots`
+latest base rows; this includes every base row of the selected parent windows.
+
+Expected base slots are 3, 12, 288 and 2,016 respectively. `base_windows` counts
+observed slots; `expected_windows` is the full parent width. No missing slots,
+zero-volume bars or empty parent windows are invented. Gaps can mean future
+slots, quiet markets or capture gaps; this model cannot distinguish them.
+
+`all_observed_final` records whether every observed child is final. A rollup's
+`is_final` additionally requires all expected slots. The UI shows Developing
+when any observed child is developing, Partial when all observed children are
+final but coverage is incomplete, and Final only when both conditions hold.
+Even Final/full coverage is not proof of complete exchange capture: a base
+candle may have begun mid-window or missed trades.
+
+Computed rollups have no checkpoint revision; the dashboard uses `revision=None`
+and displays Computed. `updated_at` is the latest base update, not query time.
+Base-window counts and conservative finality are exposed for Grafana as well
+as Streamlit. Base history retention determines how far rollups can be queried;
+the function cannot reconstruct deleted or uncaptured data. Large weekly reads
+still require performance measurements; they are not a precomputed OLAP store.

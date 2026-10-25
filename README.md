@@ -4,8 +4,8 @@ Configure a watchlist, stream market data from multiple exchanges, and explore
 near-real-time prices and market metrics in a local dashboard.
 
 The platform uses Kafka, Spark Structured Streaming and PostgreSQL, with
-Streamlit for visualization. Market selection is driven by YAML rather than
-separate scripts for each exchange and trading pair. Binance and MEXC spot
+Grafana and Streamlit dashboards. Market selection is driven by YAML rather
+than separate scripts for each exchange and trading pair. Binance and MEXC spot
 trade feeds are currently supported through public WebSockets; no exchange
 account or API key is required.
 
@@ -18,6 +18,8 @@ account or API key is required.
   developing/final status.
 - Displays prices, cross-exchange price differences, recent trades, candle
   charts and feed freshness.
+- Offers 1m, 5m, 15m, 1h, 1d and 1w candles. Larger intervals are calculated
+  from current five-minute snapshots in PostgreSQL, with base-window coverage shown.
 
 Price comparisons use the last observed trades, not executable bid/ask quotes.
 This is an analytics project, not a trading bot or an arbitrage execution system.
@@ -34,6 +36,7 @@ flowchart LR
     T --> P[("PostgreSQL")]
     C --> P
     P --> UI["Streamlit dashboard"]
+    P --> G["Grafana dashboard"]
 ```
 
 Ingestion, trade processing, candle processing and the dashboard are separate
@@ -52,7 +55,8 @@ The current setup targets macOS with Homebrew. You will need:
 
 - Docker Desktop, running.
 - Python 3.11 and OpenJDK 17 installed through Homebrew.
-- Make and available local ports: 5432, 8080, 8501 and 9092.
+- Make and available local ports: 5432, 8080, 9092, plus 3000 for Grafana
+  and/or 8501 for Streamlit.
 
 Java is required by Spark; application code is written in Python. The Makefile
 locates Java through Homebrew, so other environments need path adjustments.
@@ -88,7 +92,17 @@ Open four terminals in the repository root. Leave one command running in each:
 | 1 | `make ingestion` | Capture the configured exchange feeds |
 | 2 | `make live-pipeline` | Process and store recent/latest trades |
 | 3 | `make candles` | Compute and store one-minute candles |
-| 4 | `make dashboard` | Serve the dashboard |
+| 4 | `make dashboard` | Serve Streamlit (optional when using Grafana) |
+
+For five-minute candles, use `make candles CANDLE_INTERVAL=5m` in terminal 3.
+To keep both intervals updating, run it in an additional terminal alongside the
+default one-minute query. Select `1m` or `5m` in the dashboard; switching the
+selector reads stored results and does not start processing.
+
+The 15m, 1h, 1d and 1w views require the five-minute query. Run `make db-migrate`
+to install the rollup function. Days use UTC midnight; weeks start Monday UTC.
+Missing base candles are not filled, and full slot coverage does not prove
+complete exchange capture.
 
 Open [the dashboard](http://127.0.0.1:8501) and
 [Kafka UI](http://127.0.0.1:8080). Allow the first Spark batches to complete;
@@ -106,7 +120,47 @@ make infra-stop
 ```
 
 This preserves Kafka and PostgreSQL data. Stopping containers does not stop
-host applications, so stop the four terminal processes too.
+host applications, so stop each application terminal too.
+
+## Choose a dashboard
+
+Grafana is the primary interface; Streamlit is a maintained alternative.
+Run either or both against the same PostgreSQL results. Neither starts a Kafka
+consumer or Spark query.
+
+| Interface | Start | Local address | Stop |
+|---|---|---|---|
+| Grafana | `make grafana-up` | [Market Analytics](http://127.0.0.1:3000/d/market-platform) | `make grafana-stop` |
+| Streamlit | `make dashboard` | [Streamlit](http://127.0.0.1:8501) | `Ctrl+C` in its terminal |
+
+Grafana has symbol and time-range controls. Streamlit uses `DASHBOARD_SYMBOL`.
+Both use the same candle tables and SQL rollups.
+
+### Grafana setup
+
+Start PostgreSQL before running `make grafana-up`. No Grafana Cloud account is
+needed. The local page allows anonymous viewing;
+administration is protected by a generated password in the ignored,
+permission-restricted `.env.grafana` file. Do not expose this local setup to
+the internet. Use the setup command rather than starting the container directly.
+
+The dashboard has symbol, exchange and interval selectors, last-trade price
+comparisons, candlesticks, volume, coverage and exact-value inspection tables.
+It reads the same PostgreSQL results through a dedicated read-only account.
+It does not start ingestion or Spark: retained samples can be stale, and the
+freshness labels will say so. Adjust the time range to the captured data;
+daily/weekly candles may need a wider range to include the bucket's start.
+Chart reads are bounded to the latest 200 candles per selection; the time picker
+filters that bounded history rather than triggering a historical backfill.
+
+The dashboard and data source are provisioned from `infra/grafana/`. Edit
+`scripts/grafana_dashboard.py` and run `make grafana-build` to regenerate the
+dashboard; local UI edits are not the source of truth. Grafana reloads the file.
+Both interfaces and their tests stay in Git. Check both when changing serving
+schemas or metric definitions.
+
+Stopping Grafana preserves its named volume and local credentials. `make infra-stop`
+also stops it; `make infra-down` removes containers but preserves named volumes.
 
 ## Choose exchanges and markets
 
@@ -168,6 +222,7 @@ interactive selection.
 | `make spark-consumer-once` | Inspect available input using a separate diagnostic checkpoint |
 | `make live-pipeline-once` | Process available trade input, then exit |
 | `make candles-once` | Process available candle input, then exit |
+| `make candles-once CANDLE_INTERVAL=5m` | Process available five-minute candle input, then exit |
 | `make check` | Run formatting, linting, type checks and tests |
 | `make proto` | Regenerate the checked-in MEXC Protobuf decoder |
 
@@ -256,11 +311,13 @@ RUN_POSTGRES_INTEGRATION=1 make check
 | `processing/spark/` | Streaming queries, validation, candle state and sinks |
 | `common/` | Shared settings, logging and data contracts |
 | `dashboard/` | Streamlit views, charts and database reads |
+| `infra/grafana/` | Provisioned Grafana data source and dashboard |
+| `scripts/` | Setup, migrations, checks and Grafana dashboard generation |
 | `migrations/` | Versioned PostgreSQL schema changes |
 | `tests/` | Offline fixtures, unit tests and Spark/database integration tests |
 | `docs/` | Contracts, decisions and historical verification notes |
 
 ## Stack
 
-Python 3.11 · Kafka 4.3.1 · Spark 4.0.3 · PostgreSQL 17 · Streamlit · Altair ·
+Python 3.11 · Kafka 4.3.1 · Spark 4.0.3 · PostgreSQL 17 · Grafana · Streamlit ·
 Docker Compose · Kafbat Kafka UI

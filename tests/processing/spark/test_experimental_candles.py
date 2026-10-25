@@ -7,6 +7,7 @@ import pytest
 from pyspark.sql import DataFrame, Row, SparkSession
 from pyspark.sql import functions as F
 
+from common.contracts.candle import CandleInterval
 from processing.spark.candles import aggregate_candles
 from processing.spark.experimental_candles import _update_candle, prototype_candles
 from tests.processing.spark.test_candles import spark as spark
@@ -18,12 +19,34 @@ def test_prototype_requires_streaming_input(spark: SparkSession) -> None:
         prototype_candles(trade_rows(spark))
 
 
+def test_unsupported_interval_fails_before_building_a_plan(spark: SparkSession) -> None:
+    with pytest.raises(ValueError, match="Supported candle intervals"):
+        prototype_candles(trade_rows(spark), interval="15m")
+
+
+@pytest.mark.parametrize("interval", ["1m", "5m"])
 def test_combined_state_duplicates_lateness_recovery_and_cleanup(
-    spark: SparkSession, tmp_path: Path
+    spark: SparkSession, tmp_path: Path, interval: CandleInterval
 ) -> None:
     incoming = tmp_path / "incoming"
     incoming.mkdir()
     trades = trade_rows(spark)
+    if interval == "5m":
+        trades = trades.withColumn(
+            "trade_time",
+            F.when(
+                F.col("event_id") == "b", F.to_timestamp(F.lit("2026-10-18 10:04:40"))
+            )
+            .when(
+                F.col("event_id") == "c", F.to_timestamp(F.lit("2026-10-18 10:03:20"))
+            )
+            .when(
+                F.col("event_id") == "d", F.to_timestamp(F.lit("2026-10-18 10:05:00"))
+            )
+            .otherwise(F.col("trade_time")),
+        )
+    future_time = "10:03:10" if interval == "1m" else "10:07:10"
+    further_time = "10:06:10" if interval == "1m" else "10:12:10"
     batches = [
         trades.filter("event_id IN ('a', 'b', 'e', 'f')"),
         trades.filter("event_id IN ('a', 'c', 'd')"),
@@ -32,7 +55,7 @@ def test_combined_state_duplicates_lateness_recovery_and_cleanup(
             F.lit("future").alias("event_id"),
             "source",
             "symbol",
-            F.to_timestamp(F.lit("2026-10-18 10:03:10")).alias("trade_time"),
+            F.to_timestamp(F.lit(f"2026-10-18 {future_time}")).alias("trade_time"),
             "price",
             "quantity",
         ),
@@ -41,7 +64,7 @@ def test_combined_state_duplicates_lateness_recovery_and_cleanup(
             F.lit("further").alias("event_id"),
             "source",
             "symbol",
-            F.to_timestamp(F.lit("2026-10-18 10:06:10")).alias("trade_time"),
+            F.to_timestamp(F.lit(f"2026-10-18 {further_time}")).alias("trade_time"),
             "price",
             "quantity",
         ),
@@ -52,12 +75,17 @@ def test_combined_state_duplicates_lateness_recovery_and_cleanup(
     snapshots: list[Row] = []
 
     def collect_rows(batch: DataFrame, batch_id: int) -> None:
-        snapshots.extend(batch.collect())
+        rows = batch.collect()
+        duration = 60_000 if interval == "1m" else 300_000
+        assert all(row.interval == interval for row in rows)
+        assert all(row.window_start_ms % duration == 0 for row in rows)
+        assert all(row.window_end_ms == row.window_start_ms + duration for row in rows)
+        snapshots.extend(rows)
 
     def start_query():
         raw = spark.readStream.schema(trades.schema).json(str(incoming))
         return (
-            prototype_candles(raw)
+            prototype_candles(raw, interval=interval)
             .writeStream.outputMode("update")
             .foreachBatch(collect_rows)
             .option("checkpointLocation", str(tmp_path / "checkpoint"))
@@ -91,6 +119,10 @@ def test_combined_state_duplicates_lateness_recovery_and_cleanup(
             2,
         )
         assert not first.is_final
+        assert first.interval == interval
+        assert first.window_end_ms - first.window_start_ms == (
+            60_000 if interval == "1m" else 300_000
+        )
 
         query.stop()
         query = start_query()
@@ -100,7 +132,7 @@ def test_combined_state_duplicates_lateness_recovery_and_cleanup(
         publish(1)
         revised = target_rows()[-1]
         expected = (
-            aggregate_candles(trades)
+            aggregate_candles(trades, interval)
             .filter("source = 'binance' AND symbol = 'BTCUSDT'")
             .orderBy("window_start")
             .first()
@@ -146,12 +178,16 @@ def test_combined_state_duplicates_lateness_recovery_and_cleanup(
         query.stop()
 
 
-def test_same_batch_duplicates_and_equal_time_ordering() -> None:
+@pytest.mark.parametrize("interval,duration", [("1m", 60_000), ("5m", 300_000)])
+def test_same_batch_duplicates_and_equal_time_ordering(
+    interval: CandleInterval, duration: int
+) -> None:
     import pandas as pd
 
     state = Mock()
     state.hasTimedOut = False
     state.exists = False
+    state.update.side_effect = lambda _: setattr(state, "exists", True)
     state.getCurrentWatermarkMs.return_value = 0
     batch = pd.DataFrame(
         [
@@ -162,8 +198,15 @@ def test_same_batch_duplicates_and_equal_time_ordering() -> None:
         ],
         columns=["event_id", "trade_time_ms", "price", "quantity"],
     )
-    result = list(_update_candle(("binance", "BTCUSDT", 0), iter([batch]), state))
+    result = list(
+        _update_candle(
+            ("binance", "BTCUSDT", 0), iter([batch]), state, interval=interval
+        )
+    )
     row = result[0].iloc[0]
+    assert row["interval"] == interval
+    assert row["window_end_ms"] == duration
+    state.setTimeoutTimestamp.assert_called_once_with(duration)
     assert (row["open"], row["close"], row["volume"], row["trade_count"]) == (
         Decimal("100"),
         Decimal("103"),
