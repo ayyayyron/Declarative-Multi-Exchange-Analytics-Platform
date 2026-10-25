@@ -4,7 +4,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from common.config import get_settings
+
 DATASOURCE = {"type": "postgres", "uid": "market-postgres"}
+DASHBOARD_PATH = (
+    Path(__file__).resolve().parents[1] / "infra/grafana/dashboards/market.json"
+)
 SYMBOL = "${symbol:sqlstring}"
 EXCHANGE = "${exchange:sqlstring}"
 INTERVAL = "${interval:sqlstring}"
@@ -86,8 +91,10 @@ def variable(name: str, query: str, current: str) -> dict[str, Any]:
     }
 
 
-def build_dashboard() -> dict[str, Any]:
+def build_dashboard(stale_after_seconds: int = 15) -> dict[str, Any]:
     """Build the file-provisioned market dashboard."""
+    if type(stale_after_seconds) is not int or stale_after_seconds < 1:
+        raise ValueError("Freshness threshold must be a positive integer")
     fields = "to_timestamp(window_start_ms/1000.0) AS time,open,high,low,close,volume"
     candle_query = CANDLES + f"SELECT {fields} FROM visible ORDER BY window_start_ms"
     panels = [
@@ -111,7 +118,8 @@ def build_dashboard() -> dict[str, Any]:
             "Latest trades · $symbol",
             "table",
             f"""
-            SELECT CASE WHEN trade_time >= now()-interval '15 seconds'
+            SELECT CASE WHEN trade_time >=
+                    now()-interval '{stale_after_seconds} seconds'
                     THEN 'LIVE' ELSE 'STALE' END AS freshness,
                 source,price,
                 round(greatest(0,extract(epoch FROM now()-trade_time)))
@@ -146,8 +154,9 @@ def build_dashboard() -> dict[str, Any]:
             4,
             "Trade pipeline · all symbols",
             "table",
-            """
-            SELECT CASE WHEN last_successful_batch_at >= now()-interval '15 seconds'
+            f"""
+            SELECT CASE WHEN last_successful_batch_at >=
+                    now()-interval '{stale_after_seconds} seconds'
                     THEN 'LIVE' ELSE 'STALE' END AS status,
                 events_processed,events_rejected,
                 last_successful_batch_at AS "Last commit"
@@ -177,9 +186,9 @@ def build_dashboard() -> dict[str, Any]:
             6,
             "Latest visible candle · status and coverage",
             "table",
-            CANDLES + """
+            CANDLES + f"""
             SELECT status,
-                CASE WHEN updated_at >= now()-interval '15 seconds'
+                CASE WHEN updated_at >= now()-interval '{stale_after_seconds} seconds'
                     THEN 'FRESH' ELSE 'STALE' END AS freshness,
                 coverage,close::text,volume::text,trade_count,revision,
                 to_timestamp(window_start_ms/1000.0) AS "Start (UTC)",
@@ -285,10 +294,21 @@ def build_dashboard() -> dict[str, Any]:
     }
 
 
-if __name__ == "__main__":
-    destination = (
-        Path(__file__).resolve().parents[1] / "infra/grafana/dashboards/market.json"
+def main() -> None:
+    settings = get_settings()
+    if settings.serving_mode != "raw":
+        raise ValueError(
+            "Grafana supports SERVING_MODE=raw only; use Streamlit for canonical data"
+        )
+    DASHBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DASHBOARD_PATH.write_text(
+        json.dumps(
+            build_dashboard(int(settings.dashboard_stale_after_seconds)), indent=2
+        )
+        + "\n"
     )
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(build_dashboard(), indent=2) + "\n")
     print("Generated infra/grafana/dashboards/market.json")
+
+
+if __name__ == "__main__":
+    main()

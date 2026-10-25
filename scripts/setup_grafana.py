@@ -17,8 +17,12 @@ READ_TABLES = ("candles", "latest_trades", "live_trades", "pipeline_status")
 
 def setup() -> None:
     """Reuse generated credentials; fail rather than adopt an unrelated SQL role."""
-    apply_migrations()
     settings = get_settings()
+    if settings.serving_mode != "raw":
+        raise ValueError(
+            "Grafana supports SERVING_MODE=raw only; use Streamlit for canonical data"
+        )
+    apply_migrations()
     if ENV_PATH.exists():
         values = dict(
             line.split("=", 1) for line in ENV_PATH.read_text().splitlines() if line

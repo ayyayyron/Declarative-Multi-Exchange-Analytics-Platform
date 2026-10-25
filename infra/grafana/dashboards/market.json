@@ -52,7 +52,7 @@
             "type": "postgres",
             "uid": "market-postgres"
           },
-          "rawSql": "\n            SELECT CASE WHEN trade_time >= now()-interval '15 seconds'\n                    THEN 'LIVE' ELSE 'STALE' END AS freshness,\n                source,price,\n                round(greatest(0,extract(epoch FROM now()-trade_time)))\n                    AS \"Age (seconds)\",trade_time AS \"Trade time\"\n            FROM raw_market.latest_trades WHERE symbol=${symbol:sqlstring} ORDER BY source\n        ",
+          "rawSql": "\n            SELECT CASE WHEN trade_time >=\n                    now()-interval '15 seconds'\n                    THEN 'LIVE' ELSE 'STALE' END AS freshness,\n                source,price,\n                round(greatest(0,extract(epoch FROM now()-trade_time)))\n                    AS \"Age (seconds)\",trade_time AS \"Trade time\"\n            FROM raw_market.latest_trades WHERE symbol=${symbol:sqlstring} ORDER BY source\n        ",
           "format": "table",
           "rawQuery": true
         }
@@ -124,7 +124,7 @@
             "type": "postgres",
             "uid": "market-postgres"
           },
-          "rawSql": "\n            SELECT CASE WHEN last_successful_batch_at >= now()-interval '15 seconds'\n                    THEN 'LIVE' ELSE 'STALE' END AS status,\n                events_processed,events_rejected,\n                last_successful_batch_at AS \"Last commit\"\n            FROM raw_market.pipeline_status\n            WHERE component='spark-live-market' AND source='all'\n        ",
+          "rawSql": "\n            SELECT CASE WHEN last_successful_batch_at >=\n                    now()-interval '15 seconds'\n                    THEN 'LIVE' ELSE 'STALE' END AS status,\n                events_processed,events_rejected,\n                last_successful_batch_at AS \"Last commit\"\n            FROM raw_market.pipeline_status\n            WHERE component='spark-live-market' AND source='all'\n        ",
           "format": "table",
           "rawQuery": true
         }

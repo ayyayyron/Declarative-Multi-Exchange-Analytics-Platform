@@ -4,6 +4,7 @@ import re
 import stat
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import psycopg
@@ -14,7 +15,7 @@ from psycopg.conninfo import conninfo_to_dict
 
 from common.config import Settings
 from common.contracts.candle import DISPLAY_CANDLE_INTERVALS
-from scripts import setup_grafana
+from scripts import grafana_dashboard, setup_grafana
 from scripts.grafana_dashboard import build_dashboard
 from tests.dashboard.test_rollups import dsn as dsn
 from tests.dashboard.test_rollups import rollup_database as rollup_database
@@ -39,6 +40,61 @@ def test_grafana_is_optional_local_and_has_no_committed_password() -> None:
     assert service["environment"]["GF_PLUGINS_PREINSTALL_DISABLED"] == "true"
     assert all("PASSWORD" not in key for key in service["environment"])
     assert ".env.grafana" in Path(".gitignore").read_text().splitlines()
+
+
+def test_freshness_threshold_applies_to_all_status_queries() -> None:
+    panels = {panel["id"]: panel for panel in build_dashboard(60)["panels"]}
+    for identifier in (2, 4, 6):
+        query = panels[identifier]["targets"][0]["rawSql"]
+        assert "interval '60 seconds'" in query
+        assert "interval '15 seconds'" not in query
+
+
+@pytest.mark.parametrize("threshold", [0, -1, True, "60"])
+def test_invalid_freshness_threshold_is_rejected(threshold: object) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        build_dashboard(threshold)
+
+
+def test_canonical_setup_fails_before_migrations_or_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env = tmp_path / ".env.grafana"
+    migrate = MagicMock()
+    monkeypatch.setattr(setup_grafana, "ENV_PATH", env)
+    monkeypatch.setattr(setup_grafana, "apply_migrations", migrate)
+    monkeypatch.setattr(
+        setup_grafana,
+        "get_settings",
+        lambda: Settings(_env_file=None, serving_mode="canonical"),
+    )
+    with pytest.raises(ValueError, match="SERVING_MODE=raw only"):
+        setup_grafana.setup()
+    migrate.assert_not_called()
+    assert not env.exists()
+
+
+@pytest.mark.parametrize("mode", ["raw", "canonical"])
+def test_generator_uses_settings_and_rejects_canonical_before_writing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    destination = tmp_path / "market.json"
+    destination.write_text("previous dashboard")
+    monkeypatch.setattr(grafana_dashboard, "DASHBOARD_PATH", destination)
+    monkeypatch.setattr(
+        grafana_dashboard,
+        "get_settings",
+        lambda: Settings(
+            _env_file=None, serving_mode=mode, dashboard_stale_after_seconds=60
+        ),
+    )
+    if mode == "canonical":
+        with pytest.raises(ValueError, match="SERVING_MODE=raw only"):
+            grafana_dashboard.main()
+        assert destination.read_text() == "previous dashboard"
+    else:
+        grafana_dashboard.main()
+        assert json.loads(destination.read_text()) == build_dashboard(60)
 
 
 @pytest.fixture
